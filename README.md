@@ -210,7 +210,8 @@ The figure `intensity_crater_dielectric.png` shows the corresponding intensity `
 The animations compare the field `Re[H_y · e^{−iωt}]` in the air region for an off-resonance angle (left) and the BIC angle (right):
 
 - **OFF-BIC (left):** Clear standing-wave pattern caused by the interference of the incident and strongly reflected wave.
-- **BIC (right):** No reflected wave — the oscillating field propagates cleanly upward into the grating with essentially no return signal.
+- **BIC (right):** Supposed to have no reflected wave — the oscillating field propagates cleanly upward into the grating with essentially no return signal.
+- BUT this is not the case, why?! I don't know, come back for more update in the future work!
 
 ![BIC Wave Animation](BIC_wave_propagation_air.gif)
 
