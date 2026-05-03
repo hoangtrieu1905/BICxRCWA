@@ -251,4 +251,5 @@ Contains the same embedded RCWA solver functions (`gridC`, `ToeplitzM`, `create_
 
 - **MATLAB original:** Dr. Benjamin Civiletti
 - **Python port & extension:** Hoang Trieu
+- **Read Me**: Copilot
 - First ported: June 6, 2024 — Last updated: May 2, 2026
