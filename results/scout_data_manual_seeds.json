@@ -1,0 +1,7 @@
+{
+  "note": "Manually recovered from console log output. Full scout_data.npz will be written on next run of run_overnight_bic_hunt().",
+  "known_candidates": [
+    {"theta": 13.45, "slab": 783.0, "r0_sq": 3.2e-4, "type": "FW_candidate"},
+    {"theta": 0.5,   "slab": 992.0, "r0_sq": 3.7e-4, "type": "symmetry_protected_candidate"}
+  ]
+}

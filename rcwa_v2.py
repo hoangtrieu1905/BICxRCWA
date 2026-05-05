@@ -670,98 +670,311 @@ def run_overnight_bic_hunt():
                 print(f" ERROR: {e}")
                 raise
 
-    # --- PLOT THE TERRAIN ---
-    plt.figure(figsize=(8, 6))
-    plt.pcolormesh(Theta_grid, Slab_grid, Intensity_grid, cmap='viridis', shading='auto')
-    plt.colorbar(label='Reflection Intensity |r_0|^2')
-    plt.title('Stage 1: 2D Coarse Scout (Dielectric)')
-    plt.xlabel('Theta (degrees)')
-    plt.ylabel('Slab Thickness (nm)')
-    plt.savefig("stage1_2D_scout.png", dpi=300)
-    plt.close()
-    print("-> Saved: stage1_2D_scout.png")
+    # ── Save scout data ─────────────────────────────────────────
+    import os, json
+    import numpy as np
 
-    # --- STAGE 2: Locate the Fano Resonance (Max Gradient) ---
-    print("\nStage 2: Calculating 2D Gradient to locate the Fano ridge...")
+    os.makedirs("results", exist_ok=True)
 
-    dI_dslab, dI_dTheta = np.gradient(Intensity_grid, slab_vals, theta_vals)
-    gradient_magnitude = np.sqrt(dI_dslab**2 + dI_dTheta**2)
+    # Intensity_grid is already a 2D array with shape (N_slab, N_theta) — no reshape needed
+    _intensity_array = Intensity_grid
 
-    intensity_threshold = np.percentile(Intensity_grid, 90)
-    valid_region_mask = Intensity_grid >= intensity_threshold
-
-    masked_gradient = np.zeros_like(gradient_magnitude)
-    masked_gradient[valid_region_mask] = gradient_magnitude[valid_region_mask]
-
-    max_grad_idx = np.unravel_index(np.argmax(masked_gradient), masked_gradient.shape)
-
-    ridge_theta = theta_vals[max_grad_idx[1]]
-    ridge_slab  = slab_vals[max_grad_idx[0]]
-
-    # --- TRUE STEEPEST DESCENT STEP ---
-    dtheta = float(theta_vals[1] - theta_vals[0])
-    dslab  = float(slab_vals[1]  - slab_vals[0])
-
-    grad_theta = float(dI_dTheta[max_grad_idx])
-    grad_slab  = float(dI_dslab[max_grad_idx])
-
-    scaled_grad_theta = grad_theta * dtheta
-    scaled_grad_slab  = grad_slab  * dslab
-    scaled_grad_norm  = np.hypot(scaled_grad_theta, scaled_grad_slab)
-
-    if scaled_grad_norm == 0.0:
-        start_theta = float(ridge_theta)
-        start_slab  = float(ridge_slab)
-    else:
-        delta_theta = -0.5 * dtheta * (scaled_grad_theta / scaled_grad_norm)
-        delta_slab  = -0.5 * dslab  * (scaled_grad_slab  / scaled_grad_norm)
-
-        start_theta = float(np.clip(ridge_theta + delta_theta, theta_vals[0], theta_vals[-1]))
-        start_slab  = float(np.clip(ridge_slab  + delta_slab,  slab_vals[0],  slab_vals[-1]))
-
-    x0 = [start_theta, start_slab]
-
-    print(f"-> Max gradient found on resonance peak at "
-          f"Theta = {ridge_theta:.4f}, Slab = {ridge_slab:.4f} nm")
-    print(f"-> Seeding Nelder-Mead downhill at x0 = {x0}...")
-
-    # --- STAGE 3: Nelder-Mead Optimization ---
-    iteration_counter = [0]
-    def callback_fn(xk):
-        iteration_counter[0] += 1
-        print(f"Nelder-Mead Iteration {iteration_counter[0]}: "
-              f"Theta = {xk[0]:.6f} deg, Slab = {xk[1]:.6f} nm")
-
-    result = opt.minimize(
-        objective_function,
-        x0,
-        method='Nelder-Mead',
-        options={'xatol': 1e-5, 'fatol': 1e-8, 'disp': True},
-        callback=callback_fn
+    np.savez_compressed(
+        "results/scout_data.npz",
+        theta_vals     = np.array(theta_vals),
+        slab_vals      = np.array(slab_vals),
+        intensity_map  = _intensity_array,
     )
+    print(f"[SAVE] Scout data saved to results/scout_data.npz")
+    print(f"[SAVE] Shape: theta={len(theta_vals)}, "
+          f"slab={len(slab_vals)}, "
+          f"intensity={_intensity_array.shape}")
+    print(f"[SAVE] Intensity range: "
+          f"min={_intensity_array.min():.4e}, "
+          f"max={_intensity_array.max():.4f}")
+    print(f"[SAVE] Global minimum at: "
+          f"theta={theta_vals[np.unravel_index(_intensity_array.argmin(), _intensity_array.shape)[1]]:.4f} deg, "
+          f"slab={slab_vals[np.unravel_index(_intensity_array.argmin(), _intensity_array.shape)[0]]:.2f} nm")
 
-    if result.success:
-        print("\n=== SUCCESS! TRUE BIC TRAPPED ===")
-        print(f"Optimal Theta:          {result.x[0]:.6f} deg")
-        print(f"Optimal Slab Thickness: {result.x[1]:.6f} nm")
-        print(f"Final Reflection Intensity: {result.fun:.6e}")
+    # Also save human-readable JSON for quick inspection
+    _meta = {
+        "theta_min": float(np.array(theta_vals).min()),
+        "theta_max": float(np.array(theta_vals).max()),
+        "n_theta":   int(len(theta_vals)),
+        "slab_min":  float(np.array(slab_vals).min()),
+        "slab_max":  float(np.array(slab_vals).max()),
+        "n_slab":    int(len(slab_vals)),
+        "intensity_global_min": float(_intensity_array.min()),
+        "intensity_global_max": float(_intensity_array.max()),
+        "min_location_theta":   float(theta_vals[
+            np.unravel_index(_intensity_array.argmin(),
+                             _intensity_array.shape)[1]]),
+        "min_location_slab":    float(slab_vals[
+            np.unravel_index(_intensity_array.argmin(),
+                             _intensity_array.shape)[0]]),
+    }
+    with open("results/scout_meta.json", "w") as f:
+        json.dump(_meta, f, indent=2)
+    print(f"[SAVE] Metadata saved to results/scout_meta.json")
+    # ── End save block ───────────────────────────────────────────
 
-        with open("bic_optimization_results.txt", "w") as f:
-            f.write("=== TRUE BIC OPTIMIZATION RESULTS ===\n")
-            f.write(f"Optimal Theta:          {result.x[0]:.8f} deg\n")
-            f.write(f"Optimal Slab Thickness: {result.x[1]:.8f} nm\n")
-            f.write(f"Final Reflection Intensity: {result.fun:.8e}\n")
-            f.write("\nFull SciPy Result Object:\n")
-            f.write(str(result))
-        print("-> Saved numerical results to bic_optimization_results.txt\n")
+    # ================================================================
+    # STEP 2a — Summarize the intensity map
+    # intensity_map[i, j]: i indexes slab_vals, j indexes theta_vals
+    # ================================================================
+    from matplotlib.colors import LogNorm
+    import json
 
-        print("Stage 4: Generating Phase and Intensity Maps...")
-        plot_phase_vortex(result.x[0], result.x[1])
-        optimal_theta, optimal_slab = result.x[0], result.x[1]
-    else:
-        print("\nOptimization failed to converge.")
-        optimal_theta, optimal_slab = None, None
+    intensity_map = Intensity_grid  # alias: shape (N_slab, N_theta)
 
+    min_idx = np.unravel_index(np.argmin(intensity_map), intensity_map.shape)
+    max_idx = np.unravel_index(np.argmax(intensity_map), intensity_map.shape)
+    min_val   = intensity_map[min_idx]
+    max_val   = intensity_map[max_idx]
+    min_theta = theta_vals[min_idx[1]]
+    min_slab  = slab_vals[min_idx[0]]
+    max_theta = theta_vals[max_idx[1]]
+    max_slab  = slab_vals[max_idx[0]]
+
+    print(f"\nScout complete. Intensity map shape: (N_slab, N_theta) = ({len(slab_vals)}, {len(theta_vals)})")
+    print(f"Global min: {min_val:.4e} at theta={min_theta:.2f} deg, slab={min_slab:.1f} nm")
+    print(f"Global max: {max_val:.4f} at theta={max_theta:.2f} deg, slab={max_slab:.1f} nm")
+
+    # ================================================================
+    # STEP 2b — Find Fano ridge points (intensity > 0.5)
+    # ================================================================
+    fano_ridge_points = []
+    for i in range(len(slab_vals)):
+        for j in range(len(theta_vals)):
+            if intensity_map[i, j] > 0.5:
+                fano_ridge_points.append((i, j))
+
+    print(f"\nFano ridge: found {len(fano_ridge_points)} grid points with intensity > 0.5")
+
+    slab_to_thetas = {}
+    for (i, j) in fano_ridge_points:
+        s = slab_vals[i]
+        if s not in slab_to_thetas:
+            slab_to_thetas[s] = []
+        slab_to_thetas[s].append(theta_vals[j])
+    for s in sorted(slab_to_thetas.keys()):
+        theta_list = sorted(slab_to_thetas[s])
+        theta_str = ", ".join(f"{t:.2f}" for t in theta_list)
+        print(f"  Slab={s:.1f} nm: Fano peaks at theta = [{theta_str}]")
+
+    # ================================================================
+    # STEP 2c — Find BIC candidate seeds
+    # A grid point is a BIC candidate if:
+    #   1. intensity < 0.01  (dark)
+    #   2. at least one neighbor within ±2 theta steps (same slab row) has intensity > 0.3
+    # ================================================================
+    bic_candidates = []
+
+    for i in range(len(slab_vals)):
+        for j in range(len(theta_vals)):
+            if intensity_map[i, j] >= 0.01:
+                continue
+            has_nearby_fano = False
+            for dj in [-2, -1, 1, 2]:
+                jj = j + dj
+                if 0 <= jj < len(theta_vals) and intensity_map[i, jj] > 0.3:
+                    has_nearby_fano = True
+                    break
+            if has_nearby_fano:
+                bic_candidates.append({
+                    'theta': float(theta_vals[j]),
+                    'slab':  float(slab_vals[i]),
+                    'intensity': float(intensity_map[i, j]),
+                    'type': 'FW'
+                })
+
+    # Symmetry-protected BIC candidates: theta=0 rows that are dark
+    # Seed at theta=0.5 to give the optimizer room to move in both theta directions
+    for i in range(len(slab_vals)):
+        if intensity_map[i, 0] < 0.05:
+            bic_candidates.append({
+                'theta': 0.5,
+                'slab':  float(slab_vals[i]),
+                'intensity': float(intensity_map[i, 0]),
+                'type': 'symmetry-protected'
+            })
+
+    print(f"\nBIC candidate seeds found: {len(bic_candidates)} total")
+    for k, cand in enumerate(bic_candidates):
+        label = "FW candidate" if cand['type'] == 'FW' else "symmetry-protected candidate"
+        print(f"  Seed {k+1}: theta={cand['theta']:.4f} deg, slab={cand['slab']:.2f} nm, "
+              f"|r0|^2={cand['intensity']:.4e}")
+        print(f"  [{label}]")
+
+    # Fallback: if no candidates found, seed at steepest intensity drop in theta direction
+    # (most negative dI/dtheta), NOT at max intensity — avoids landing on a Fano peak
+    if len(bic_candidates) == 0:
+        print("\nWARNING: No BIC candidates found with adjacency criterion.")
+        print("Falling back to steepest intensity DROP in theta direction (not max intensity).")
+        _, dI_dTheta = np.gradient(intensity_map, slab_vals, theta_vals)
+        fallback_idx = np.unravel_index(np.argmin(dI_dTheta), dI_dTheta.shape)
+        bic_candidates.append({
+            'theta': float(theta_vals[fallback_idx[1]]),
+            'slab':  float(slab_vals[fallback_idx[0]]),
+            'intensity': float(intensity_map[fallback_idx]),
+            'type': 'fallback-gradient'
+        })
+        print(f"  Fallback seed: theta={bic_candidates[-1]['theta']:.4f} deg, "
+              f"slab={bic_candidates[-1]['slab']:.2f} nm")
+
+    # ================================================================
+    # TASK 3 — Nelder-Mead descent from each BIC candidate seed
+    # ================================================================
+    def bounded_objective(x):
+        theta_deg, slab_nm = x[0], x[1]
+        if not (0.0 <= theta_deg <= 30.0 and 200.0 <= slab_nm <= 1200.0):
+            return 1.0
+        return objective_function([theta_deg, slab_nm])
+
+    descent_results = []
+    N_seeds = len(bic_candidates)
+
+    for seed_idx, cand in enumerate(bic_candidates):
+        t0 = cand['theta']
+        s0 = cand['slab']
+        v0 = cand['intensity']
+
+        print(f"\n{'='*64}")
+        print(f"Starting descent {seed_idx+1}/{N_seeds} from theta={t0:.4f}, slab={s0:.2f}")
+        print(f"Initial |r0|^2 = {v0:.4e}")
+        print(f"{'='*64}")
+
+        iteration_counter = [0]
+
+        def _make_callback(sidx, counter):
+            def callback(xk):
+                counter[0] += 1
+                val = bounded_objective(xk)
+                print(f"  [Descent {sidx}] Iter {counter[0]:4d}: "
+                      f"theta={xk[0]:10.6f} deg, slab={xk[1]:10.4f} nm, "
+                      f"|r0|^2={val:.6e}  log10={np.log10(val+1e-30):.2f}")
+            return callback
+
+        result = opt.minimize(
+            bounded_objective,
+            [t0, s0],
+            method='Nelder-Mead',
+            options={'xatol': 1e-6, 'fatol': 1e-12, 'maxiter': 2000, 'disp': False},
+            callback=_make_callback(seed_idx + 1, iteration_counter)
+        )
+
+        tf = result.x[0]
+        sf = result.x[1]
+        vf = result.fun
+
+        print(f"Descent {seed_idx+1} converged:")
+        print(f"  Final theta    = {tf:.8f} degrees")
+        print(f"  Final slab     = {sf:.4f} nm")
+        print(f"  Final |r0|^2  = {vf:.6e}")
+        print(f"  log10(|r0|^2) = {np.log10(vf+1e-30):.2f}")
+        print(f"  Optimizer msg  = {result.message}")
+
+        if vf < 1e-8:
+            status = "*** STRONG BIC CANDIDATE — topological check recommended ***"
+        elif vf < 1e-3:
+            status = "Promising — near-BIC, may need finer grid or more modes"
+        else:
+            status = "Not a BIC — likely a regular reflection minimum"
+        print(f"  STATUS: {status}")
+
+        descent_results.append({
+            'seed_theta': t0,
+            'seed_slab':  s0,
+            'final_theta': tf,
+            'final_slab':  sf,
+            'r0_squared': float(vf),
+            'log10_r0_squared': float(np.log10(vf + 1e-30)),
+            'status': status,
+            'optimizer_message': result.message
+        })
+
+    # ================================================================
+    # TASK 4 — Final summary table + save to bic_candidates.json
+    # ================================================================
+    print(f"\n{'='*64}")
+    print("FINAL BIC HUNT SUMMARY")
+    print(f"{'='*64}")
+    print("  # |   Seed theta |  Seed slab |  Final theta |  Final slab | |r0|^2    | Status")
+    print("  --|--------------|------------|--------------|-------------|----------|-------")
+
+    for k, dr in enumerate(descent_results):
+        if dr['r0_squared'] < 1e-8:
+            st = "BIC"
+        elif dr['r0_squared'] < 1e-3:
+            st = "near-BIC"
+        else:
+            st = "no"
+        print(f"  {k+1} | {dr['seed_theta']:12.4f} | {dr['seed_slab']:10.2f} | "
+              f"{dr['final_theta']:12.6f} | {dr['final_slab']:11.4f} | "
+              f"{dr['r0_squared']:.3e} | {st}")
+
+    best = min(descent_results, key=lambda x: x['r0_squared'])
+    print(f"\nBest result: theta={best['final_theta']:.6f} deg, "
+          f"slab={best['final_slab']:.4f} nm, |r0|^2={best['r0_squared']:.4e}")
+
+    json_output = []
+    for dr in descent_results:
+        json_output.append({
+            "theta_deg":          dr['final_theta'],
+            "slab_nm":            dr['final_slab'],
+            "r0_squared":         dr['r0_squared'],
+            "log10_r0_squared":   dr['log10_r0_squared'],
+            "seed_theta":         dr['seed_theta'],
+            "seed_slab":          dr['seed_slab'],
+            "fourier_mode":       5
+        })
+    with open("bic_candidates.json", "w") as f:
+        json.dump(json_output, f, indent=2)
+    print("-> Saved: bic_candidates.json")
+
+    # ================================================================
+    # TASK 5 — Save scout heatmap with Fano ridges and BIC markers
+    # ================================================================
+    fano_thetas_plot = np.array([theta_vals[j] for (i, j) in fano_ridge_points]) if fano_ridge_points else np.array([])
+    fano_slabs_plot  = np.array([slab_vals[i]  for (i, j) in fano_ridge_points]) if fano_ridge_points else np.array([])
+
+    seed_thetas_plot = np.array([c['theta'] for c in bic_candidates])
+    seed_slabs_plot  = np.array([c['slab']  for c in bic_candidates])
+
+    final_thetas_plot = np.array([dr['final_theta'] for dr in descent_results])
+    final_slabs_plot  = np.array([dr['final_slab']  for dr in descent_results])
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    clipped = np.clip(intensity_map, 1e-4, None)
+    mesh = ax.pcolormesh(
+        Theta_grid, Slab_grid, clipped,
+        cmap='inferno', shading='auto',
+        norm=LogNorm(vmin=1e-4, vmax=1.0)
+    )
+    plt.colorbar(mesh, ax=ax, label='|r_0|^2 (log scale)')
+
+    if len(fano_ridge_points) > 0:
+        ax.scatter(fano_thetas_plot, fano_slabs_plot,
+                   c='white', s=10, alpha=0.4, zorder=3, label='Fano ridge')
+    if len(bic_candidates) > 0:
+        ax.scatter(seed_thetas_plot, seed_slabs_plot,
+                   marker='*', c='red', s=150, zorder=5, label='BIC seeds')
+    if len(descent_results) > 0:
+        ax.scatter(final_thetas_plot, final_slabs_plot,
+                   marker='o', c='yellow', s=200, zorder=6,
+                   edgecolors='black', linewidths=0.8, label='Converged BICs')
+
+    ax.set_xlabel('Theta (degrees)')
+    ax.set_ylabel('Slab Thickness (nm)')
+    ax.set_title('Stage 1: 2D Scout — Fano Ridges (white) and BIC Seeds (red★)')
+    ax.legend(loc='upper right', fontsize=8)
+    plt.tight_layout()
+    plt.savefig("stage1_bic_scout.png", dpi=300)
+    plt.close()
+    print("-> Saved: stage1_bic_scout.png")
+
+    optimal_theta = best['final_theta']
+    optimal_slab  = best['final_slab']
     elapsed = (time.time() - start_time) / 3600
     print(f"\n=== PIPELINE COMPLETE. Total runtime: {elapsed:.2f} hours ===")
 
