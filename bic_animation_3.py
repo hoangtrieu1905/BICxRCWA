@@ -117,15 +117,6 @@ ep[1] = 12.0 + 0j
 g = lambda x, gP: 50 * np.exp(-(x / 50)**2)
 gPrime = lambda x, gP: -2 * x / 50**2 * g(x, gP)
 
-S_func = lambda y: 0.5 * (1 + np.cos(pi / H * (y - H)))
-SPrime = lambda y: -(pi / (2*H)) * np.sin(pi / H * (y - H))
-detDG = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
-
-a11 = lambda x, y: np.abs(detDG(x, y))
-a21 = lambda x, y: -np.sign(detDG(x, y)) * S_func(y) * gPrime(x, gratingPeriod)
-a12 = lambda x, y: a21(x, y)
-a22 = lambda x, y: ((S_func(y) * gPrime(x, gratingPeriod))**2 + 1) / np.abs(detDG(x, y))
-
 
 # =====================================================================
 # RCWA SOLVER (returns complex field for time animation)
@@ -133,7 +124,15 @@ a22 = lambda x, y: ((S_func(y) * gPrime(x, gratingPeriod))**2 + 1) / np.abs(detD
 
 def solve_complex_field(theta_rad, H_optimized):
     """Run RCWA and return the COMPLEX Hyhat field (not magnitude)."""
-    layerThick = np.array([H_optimized, 900], dtype=float)
+    S_func = lambda y: 0.5 * (1 + np.cos(pi / H_optimized * (y - H_optimized)))
+    SPrime = lambda y: -(pi / (2*H_optimized)) * np.sin(pi / H_optimized * (y - H_optimized))
+    detDG  = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
+    a11 = lambda x, y: np.abs(detDG(x, y))
+    a21 = lambda x, y: -np.sign(detDG(x, y)) * S_func(y) * gPrime(x, gratingPeriod)
+    a12 = lambda x, y: a21(x, y)
+    a22 = lambda x, y: ((S_func(y) * gPrime(x, gratingPeriod))**2 + 1) / np.abs(detDG(x, y))
+
+    layerThick = np.array([H_optimized, 700], dtype=float)
     (xGrid, yGrid, yBound) = gridC(numLayers, gratingPeriod, layerThick,
                                     xDiscreteSize, yDiscreteSize)
     yGridN = np.size(yGrid)
@@ -267,7 +266,7 @@ def solve_complex_field(theta_rad, H_optimized):
 
 theta_BIC = 1.51490625          # angle of the BIC resonance
 H_BIC = 267.00795001            # optimized grating height — achieves BIC
-H_off = 250                     # wrong height — breaks BIC condition
+H_off = 450                     # wrong height — breaks BIC condition
 
 print("=" * 60)
 print("H SENSITIVITY: same theta, two different grating heights")
