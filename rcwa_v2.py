@@ -141,8 +141,11 @@ k0 = 2 * pi / lambda0
 omega = k0 / eta0
 
 
-def get_reflection(theta_inc, H_val, p_pol='p'):
-    """Return the complex zeroth-order reflection coefficient for a 1D C-RCWA solve."""
+def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p'):
+    # theta_val:       incidence angle in radians
+    # slab_thickness:  dielectric layer thickness in nm (the BIC-relevant param)
+    # H_fixed:         air buffer below grating -- must be >> grating amplitude (100 nm);
+    #                  physically inert once H_fixed >= ~600 nm (confirmed by h_diagnostic.py)
     if p_pol not in ('s', 'p'):
         raise ValueError("p_pol must be either 's' or 'p'.")
 
@@ -153,8 +156,7 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     gratingPeriod = 500
     yDiscreteSize = np.ones(numLayers)
     xDiscreteSize = 1
-    # Ensure the physical grid dynamically updates with H_val!
-    layerThick = np.array([H_val, 700], dtype=float)
+    layerThick = np.array([H_fixed, slab_thickness], dtype=float)
     ep = np.empty(numLayers, dtype=object)
     ep[0] = 1 + 1j * 10 ** (-9)
     ep[1] = 12.0 + 0j
@@ -162,16 +164,16 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     method = 'C'
 
     # Grating profile and derivative.
-    g = lambda x, gratingPeriod: 50 * np.exp(-(x / 50) ** 2)
+    g = lambda x, gratingPeriod: 100 * np.exp(-(x / 50) ** 2)
     gPrime = lambda x, gratingPeriod: -2 * x / 50 ** 2 * g(x, gratingPeriod)
 
-    # Coordinate transform using H_val.
-    #S = lambda y: 0.5 * (1 + np.cos(pi / H_val * (y - H_val)))
-    #SPrime = lambda y: -(pi / (2 * H_val)) * (np.sin(pi / H_val * (y - H_val)))
+    # Old single-layer transform (retired):
+    #S = lambda y: 0.5 * (1 + np.cos(pi / H_fixed * (y - H_fixed)))
+    #SPrime = lambda y: -(pi / (2 * H_fixed)) * (np.sin(pi / H_fixed * (y - H_fixed)))
     
-    # Coordinate transform using H_val (air) and dielectric thickness (700 nm)
-    H1 = H_val
-    H2 = 700.0
+    # Coordinate transform: H1 = fixed air buffer, H2 = variable slab thickness
+    H1 = H_fixed
+    H2 = slab_thickness
 
     def S(y):
         return np.where(y <= H1, 
@@ -194,10 +196,10 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     )
     yGridN = np.size(yGrid)
 
-    gR = lambda x, gratingPeriod: -g(x, gratingPeriod) + H_val
+    gR = lambda x, gratingPeriod: -g(x, gratingPeriod) + H_fixed
 
     k_vector = np.arange(-fourierMode, fourierMode + 1, dtype=complex)
-    k = k0 * sin(theta_inc) + 2 * pi * k_vector / gratingPeriod
+    k = k0 * sin(theta_val) + 2 * pi * k_vector / gratingPeriod
     K = np.diag(k)
     beta = np.sqrt(k0 ** 2 - k ** 2)
 
@@ -338,7 +340,7 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     X = scipy.linalg.solve(top, bottom)
     T0R = X @ A
 
-    if theta_inc == 0.0:
+    if theta_val == 0.0:
         diagnostic_offset = 4 * fourierMode + 2
         t_index = 3 * fourierMode + 1
         r_index = diagnostic_offset + 3 * fourierMode + 1
@@ -354,51 +356,43 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
         # For p-pol, specular reflection is exactly at index 38
         return T0R[offset + 3 * fourierMode + 1, 0]
 
-#Define the objective function 
 def objective_function(params):
     theta_deg = params[0]
-    H_val = params[1]
-    
-    # Convert degrees to radians for the physics engine
+    slab_val  = params[1]
     theta_rad = np.radians(theta_deg)
-    
-    # Get the complex scalar
-    r_0 = get_reflection(theta_rad, H_val)
-    
-    # Return the intensity |r_0|^2
-    intensity = np.abs(r_0)**2
-    return intensity
+    r_0 = get_reflection(theta_rad, slab_val)
+    return np.abs(r_0)**2
 
 def run_two_stage_sweeps():
     """Run two 1D parameter sweeps using objective_function.
 
-    Stage 1: fix H=700, sweep theta in [0, 15] deg with 15 points.
-    Stage 2: prompt for theta, then fix theta and sweep H in [600, 800] with 15 points.
+    Stage 1: fix slab=700 nm, sweep theta in [0, 15] deg with 15 points.
+    Stage 2: prompt for theta, then fix theta and sweep slab in [300, 700] nm with 20 points.
     """
     import matplotlib.pyplot as plt
 
-    # Stage 1: theta sweep at fixed H.
-    H_fixed = 700.0
+    # Stage 1: theta sweep at fixed slab thickness.
+    slab_fixed = 700.0
     theta_values = np.linspace(0.0, 15.0, 15)
-    theta_intensities = np.array([objective_function([theta, H_fixed]) for theta in theta_values])
+    theta_intensities = np.array([objective_function([theta, slab_fixed]) for theta in theta_values])
 
     best_idx = int(np.argmin(theta_intensities))
     best_theta_auto = float(theta_values[best_idx])
     best_intensity_auto = float(theta_intensities[best_idx])
 
-    print("\nStage 1 complete (H = 700).")
+    print("\nStage 1 complete (slab = 700 nm).")
     print(f"Best theta from sweep: {best_theta_auto:.4f} deg (intensity = {best_intensity_auto:.6e})")
 
     plt.figure(figsize=(8, 5))
     plt.plot(theta_values, theta_intensities, marker='o', linewidth=1.5)
     plt.xlabel('Theta (deg)')
     plt.ylabel('|r_0|^2')
-    plt.title('Stage 1: Theta Sweep at H = 700')
+    plt.title('Stage 1: Theta Sweep at Slab = 700 nm')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show(block=False)
 
-    #Pause for user input before stage 2.
+    # Pause for user input before stage 2.
     user_text = input(
         f"Enter your chosen theta in degrees (press Enter to use {best_theta_auto:.4f}): "
     ).strip()
@@ -409,24 +403,21 @@ def run_two_stage_sweeps():
 
     print(f"\nUsing theta = {theta_fixed:.4f} deg for Stage 2.")
 
-    #Teporarily hardcode theta_fixed to the best from stage 1 for demonstration purposes.
-    #theta_fixed = 8.5714
+    # Stage 2: slab sweep at fixed theta.
+    slab_values = np.linspace(300.0, 700.0, 20)
+    slab_intensities = np.array([objective_function([theta_fixed, slab_val]) for slab_val in slab_values])
 
-    # Stage 2: H sweep at fixed theta.
-    H_values = np.linspace(300.0, 700.0, 20)
-    H_intensities = np.array([objective_function([theta_fixed, H_val]) for H_val in H_values])
+    best_slab_idx = int(np.argmin(slab_intensities))
+    best_slab = float(slab_values[best_slab_idx])
+    best_slab_intensity = float(slab_intensities[best_slab_idx])
 
-    best_h_idx = int(np.argmin(H_intensities))
-    best_H = float(H_values[best_h_idx])
-    best_h_intensity = float(H_intensities[best_h_idx])
-
-    print(f"Best H from sweep: {best_H:.4f} (intensity = {best_h_intensity:.6e})")
+    print(f"Best slab from sweep: {best_slab:.4f} nm (intensity = {best_slab_intensity:.6e})")
 
     plt.figure(figsize=(8, 5))
-    plt.plot(H_values, H_intensities, marker='o', linewidth=1.5)
-    plt.xlabel('H')
+    plt.plot(slab_values, slab_intensities, marker='o', linewidth=1.5)
+    plt.xlabel('Slab Thickness (nm)')
     plt.ylabel('|r_0|^2')
-    plt.title(f'Stage 2: H Sweep at Theta = {theta_fixed:.4f} deg')
+    plt.title(f'Stage 2: Slab Sweep at Theta = {theta_fixed:.4f} deg')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
@@ -436,7 +427,7 @@ def run_optimization():
     import scipy.optimize as opt
     import time
 
-    # The exact coordinate we found from the Stage 2 sweep
+    # x0 = [theta_deg, slab_thickness_nm] -- update after running run_overnight_bic_hunt
     x0 = [8.5714, 447.3684]
     
     print(f"Starting Nelder-Mead optimization from x0 = {x0}...")
@@ -583,7 +574,7 @@ def calculate_winding_number(phase_grid):
     
     return int(np.round(q))
 
-def plot_phase_vortex(theta_center, H_center):
+def plot_phase_vortex(theta_center, slab_center):
     """Generate a highly zoomed-in 2D map of the complex phase and intensity, saving to disk."""
     import numpy as np
     import matplotlib.pyplot as plt
@@ -592,28 +583,23 @@ def plot_phase_vortex(theta_center, H_center):
     # Create a zoomed-in grid (+/- 0.5 degrees and +/- 5 nm)
     grid_size = 15
     theta_vals = np.linspace(theta_center - 0.5, theta_center + 0.5, grid_size)
-    H_vals = np.linspace(H_center - 5.0, H_center + 5.0, grid_size)
+    slab_vals  = np.linspace(slab_center - 5.0,  slab_center + 5.0,  grid_size)
 
-    Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
-    Phase_grid = np.zeros_like(Theta_grid)
+    Theta_grid, Slab_grid = np.meshgrid(theta_vals, slab_vals)
+    Phase_grid     = np.zeros_like(Theta_grid)
     Intensity_grid = np.zeros_like(Theta_grid)
 
     print(f"Starting 2D phase sweep ({grid_size}x{grid_size} = {grid_size**2} points)...")
     print("This will take approximately 75 minutes. Saving plots to disk when finished!\n")
 
     start_time = time.time()
-    
+
     for i in range(grid_size):
         for j in range(grid_size):
-            # The physics engine strictly requires radians!
             theta_rad = np.radians(theta_vals[j])
-            H_val = H_vals[i]
-
-            # Get the raw complex amplitude
-            r_0 = get_reflection(theta_rad, H_val)
-
-            # Store both the phase angle and the intensity
-            Phase_grid[i, j] = np.angle(r_0)
+            slab_val  = slab_vals[i]
+            r_0 = get_reflection(theta_rad, slab_val)
+            Phase_grid[i, j]     = np.angle(r_0)
             Intensity_grid[i, j] = np.abs(r_0)**2
 
         print(f"Row {i+1}/{grid_size} completed...")
@@ -621,38 +607,36 @@ def plot_phase_vortex(theta_center, H_center):
     elapsed = (time.time() - start_time) / 60
     print(f"\nSweep finished in {elapsed:.2f} minutes.")
 
-    # --- NEW: CALCULATE TOPOLOGICAL CHARGE ---
+    # --- CALCULATE TOPOLOGICAL CHARGE ---
     calculate_winding_number(Phase_grid)
 
     # --- PLOT 1: The Topological Phase Vortex ---
     plt.figure(figsize=(8, 6))
-    mesh1 = plt.pcolormesh(Theta_grid, H_grid, Phase_grid, cmap='twilight', shading='auto')
+    mesh1 = plt.pcolormesh(Theta_grid, Slab_grid, Phase_grid, cmap='twilight', shading='auto')
     plt.colorbar(mesh1, label='Phase Angle (radians)')
     plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
+    plt.ylabel('Slab Thickness (nm)')
     plt.title('Topological Phase Vortex around True BIC')
-    plt.plot(theta_center, H_center, 'w*', markersize=12, markeredgecolor='k', label='Optimal Point')
+    plt.plot(theta_center, slab_center, 'w*', markersize=12, markeredgecolor='k', label='Optimal Point')
     plt.legend()
     plt.tight_layout()
-    # SAVE TO DISK
     plt.savefig("phase_vortex_dielectric.png", dpi=300)
     print("-> Saved: phase_vortex_dielectric.png")
-    plt.close() # Close window to free memory
+    plt.close()
 
     # --- PLOT 2: The Intensity Dip ---
     plt.figure(figsize=(8, 6))
-    mesh2 = plt.pcolormesh(Theta_grid, H_grid, Intensity_grid, cmap='viridis', shading='auto')
+    mesh2 = plt.pcolormesh(Theta_grid, Slab_grid, Intensity_grid, cmap='viridis', shading='auto')
     plt.colorbar(mesh2, label='Reflection Intensity |r_0|^2')
     plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
+    plt.ylabel('Slab Thickness (nm)')
     plt.title('Reflection Intensity Minimum (Dielectric)')
-    plt.plot(theta_center, H_center, 'r*', markersize=12, markeredgecolor='k', label='Optimal Point')
+    plt.plot(theta_center, slab_center, 'r*', markersize=12, markeredgecolor='k', label='Optimal Point')
     plt.legend()
     plt.tight_layout()
-    # SAVE TO DISK
     plt.savefig("intensity_crater_dielectric.png", dpi=300)
     print("-> Saved: intensity_crater_dielectric.png")
-    plt.close() # Close window to free memory
+    plt.close()
 
 def run_overnight_bic_hunt():
     import numpy as np
@@ -665,136 +649,136 @@ def run_overnight_bic_hunt():
 
     # --- STAGE 1: 2D Coarse Grid Scout ---
     print("Stage 1: Scouting 2D Parameter Space...")
-    theta_vals = np.linspace(0.0, 15.0, 20)
-    H_vals = np.linspace(150.0, 800.0, 20)
-    
-    Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
+    theta_vals = np.linspace(0.0, 30.0, 30)
+    slab_vals  = np.linspace(200.0, 1200.0, 25)
+
+    Theta_grid, Slab_grid = np.meshgrid(theta_vals, slab_vals)
     Intensity_grid = np.zeros_like(Theta_grid)
-    
-    # Calculate the 20x20 grid
-    total_iters = len(H_vals) * len(theta_vals)
+
+    total_iters = len(slab_vals) * len(theta_vals)
     current_iter = 0
-    for i in range(len(H_vals)):
+    for i in range(len(slab_vals)):
         for j in range(len(theta_vals)):
             current_iter += 1
-            print(f"Scouting grid point {current_iter}/{total_iters}: Theta = {theta_vals[j]:.4f}, H = {H_vals[i]:.4f}...", end="", flush=True)
+            print(f"Scouting grid point {current_iter}/{total_iters}: "
+                  f"Theta = {theta_vals[j]:.4f}, Slab = {slab_vals[i]:.4f} nm...",
+                  end="", flush=True)
             try:
-                Intensity_grid[i, j] = objective_function([theta_vals[j], H_vals[i]])
+                Intensity_grid[i, j] = objective_function([theta_vals[j], slab_vals[i]])
                 print(f" Done. Intensity: {Intensity_grid[i, j]:.4e}")
             except Exception as e:
                 print(f" ERROR: {e}")
                 raise
-            
+
     # --- PLOT THE TERRAIN ---
     plt.figure(figsize=(8, 6))
-    plt.pcolormesh(Theta_grid, H_grid, Intensity_grid, cmap='viridis', shading='auto')
+    plt.pcolormesh(Theta_grid, Slab_grid, Intensity_grid, cmap='viridis', shading='auto')
     plt.colorbar(label='Reflection Intensity |r_0|^2')
     plt.title('Stage 1: 2D Coarse Scout (Dielectric)')
     plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
+    plt.ylabel('Slab Thickness (nm)')
     plt.savefig("stage1_2D_scout.png", dpi=300)
     plt.close()
     print("-> Saved: stage1_2D_scout.png")
 
-# --- STAGE 2: Locate the Fano Resonance (Max Gradient) ---
+    # --- STAGE 2: Locate the Fano Resonance (Max Gradient) ---
     print("\nStage 2: Calculating 2D Gradient to locate the Fano ridge...")
-    
-    dI_dH, dI_dTheta = np.gradient(Intensity_grid, H_vals, theta_vals)
-    gradient_magnitude = np.sqrt(dI_dH**2 + dI_dTheta**2)
-    
+
+    dI_dslab, dI_dTheta = np.gradient(Intensity_grid, slab_vals, theta_vals)
+    gradient_magnitude = np.sqrt(dI_dslab**2 + dI_dTheta**2)
+
     intensity_threshold = np.percentile(Intensity_grid, 90)
     valid_region_mask = Intensity_grid >= intensity_threshold
-    
+
     masked_gradient = np.zeros_like(gradient_magnitude)
     masked_gradient[valid_region_mask] = gradient_magnitude[valid_region_mask]
-    
+
     max_grad_idx = np.unravel_index(np.argmax(masked_gradient), masked_gradient.shape)
-    
+
     ridge_theta = theta_vals[max_grad_idx[1]]
-    ridge_H = H_vals[max_grad_idx[0]]
-    
+    ridge_slab  = slab_vals[max_grad_idx[0]]
+
     # --- TRUE STEEPEST DESCENT STEP ---
     dtheta = float(theta_vals[1] - theta_vals[0])
-    dH = float(H_vals[1] - H_vals[0])
+    dslab  = float(slab_vals[1]  - slab_vals[0])
 
     grad_theta = float(dI_dTheta[max_grad_idx])
-    grad_H = float(dI_dH[max_grad_idx])
+    grad_slab  = float(dI_dslab[max_grad_idx])
 
     scaled_grad_theta = grad_theta * dtheta
-    scaled_grad_H = grad_H * dH
-    scaled_grad_norm = np.hypot(scaled_grad_theta, scaled_grad_H)
+    scaled_grad_slab  = grad_slab  * dslab
+    scaled_grad_norm  = np.hypot(scaled_grad_theta, scaled_grad_slab)
 
     if scaled_grad_norm == 0.0:
         start_theta = float(ridge_theta)
-        start_H = float(ridge_H)
+        start_slab  = float(ridge_slab)
     else:
         delta_theta = -0.5 * dtheta * (scaled_grad_theta / scaled_grad_norm)
-        delta_H = -0.5 * dH * (scaled_grad_H / scaled_grad_norm)
+        delta_slab  = -0.5 * dslab  * (scaled_grad_slab  / scaled_grad_norm)
 
         start_theta = float(np.clip(ridge_theta + delta_theta, theta_vals[0], theta_vals[-1]))
-        start_H = float(np.clip(ridge_H + delta_H, H_vals[0], H_vals[-1]))
+        start_slab  = float(np.clip(ridge_slab  + delta_slab,  slab_vals[0],  slab_vals[-1]))
 
-    x0 = [start_theta, start_H]
-    
-    print(f"-> Max gradient found on resonance peak at Theta = {ridge_theta:.4f}, H = {ridge_H:.4f}")
+    x0 = [start_theta, start_slab]
+
+    print(f"-> Max gradient found on resonance peak at "
+          f"Theta = {ridge_theta:.4f}, Slab = {ridge_slab:.4f} nm")
     print(f"-> Seeding Nelder-Mead downhill at x0 = {x0}...")
 
     # --- STAGE 3: Nelder-Mead Optimization ---
     iteration_counter = [0]
     def callback_fn(xk):
         iteration_counter[0] += 1
-        print(f"Nelder-Mead Iteration {iteration_counter[0]}: Theta = {xk[0]:.6f}, H = {xk[1]:.6f}")
+        print(f"Nelder-Mead Iteration {iteration_counter[0]}: "
+              f"Theta = {xk[0]:.6f} deg, Slab = {xk[1]:.6f} nm")
 
     result = opt.minimize(
-        objective_function, 
-        x0, 
-        method='Nelder-Mead', 
+        objective_function,
+        x0,
+        method='Nelder-Mead',
         options={'xatol': 1e-5, 'fatol': 1e-8, 'disp': True},
         callback=callback_fn
     )
-    
+
     if result.success:
         print("\n=== SUCCESS! TRUE BIC TRAPPED ===")
-        print(f"Optimal Theta: {result.x[0]:.6f} deg")
-        print(f"Optimal H:     {result.x[1]:.6f} nm")
+        print(f"Optimal Theta:          {result.x[0]:.6f} deg")
+        print(f"Optimal Slab Thickness: {result.x[1]:.6f} nm")
         print(f"Final Reflection Intensity: {result.fun:.6e}")
-        
-        # --- NEW CODE: SAVE NUMERICAL RESULTS TO DISK ---
+
         with open("bic_optimization_results.txt", "w") as f:
             f.write("=== TRUE BIC OPTIMIZATION RESULTS ===\n")
-            f.write(f"Optimal Theta: {result.x[0]:.8f} deg\n")
-            f.write(f"Optimal H:     {result.x[1]:.8f} nm\n")
+            f.write(f"Optimal Theta:          {result.x[0]:.8f} deg\n")
+            f.write(f"Optimal Slab Thickness: {result.x[1]:.8f} nm\n")
             f.write(f"Final Reflection Intensity: {result.fun:.8e}\n")
             f.write("\nFull SciPy Result Object:\n")
             f.write(str(result))
         print("-> Saved numerical results to bic_optimization_results.txt\n")
-        # ------------------------------------------------
-        
+
         print("Stage 4: Generating Phase and Intensity Maps...")
         plot_phase_vortex(result.x[0], result.x[1])
-        optimal_theta, optimal_H = result.x[0], result.x[1]
+        optimal_theta, optimal_slab = result.x[0], result.x[1]
     else:
         print("\nOptimization failed to converge.")
-        optimal_theta, optimal_H = None, None
+        optimal_theta, optimal_slab = None, None
 
     elapsed = (time.time() - start_time) / 3600
     print(f"\n=== PIPELINE COMPLETE. Total runtime: {elapsed:.2f} hours ===")
-    
-    return optimal_theta, optimal_H
+
+    return optimal_theta, optimal_slab
 
 
 if __name__ == "__main__":
     #run_two_stage_sweeps()
     #run_optimization()
-    #plot_phase_vortex()
-    optimal_theta, optimal_H = run_overnight_bic_hunt()   #This is the correct function to run the entire 2D pipeline from scratch, but it will take many hours to complete.
-    
-    # Run ONLY the phase map around the known absolute zero
+    optimal_theta, optimal_slab = run_overnight_bic_hunt()
+
+    # Run ONLY the phase map around a known BIC candidate (update these values after each hunt):
     # optimal_theta = 1.51490625
-    # optimal_H = 267.00795001
-    
-    if optimal_theta is not None and optimal_H is not None:
+    # optimal_slab  = 267.00795001
+
+    if optimal_theta is not None and optimal_slab is not None:
         print("Running targeted phase map to calculate winding number...")
-        plot_phase_vortex(optimal_theta, optimal_H)
+        plot_phase_vortex(optimal_theta, optimal_slab)
     else:
         print("Failed to find optimal parameters. Skipping phase map.")
