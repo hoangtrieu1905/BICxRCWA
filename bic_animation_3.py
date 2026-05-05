@@ -101,7 +101,7 @@ eta0 = np.sqrt(mu0 / epsilon0)
 lambda0 = 600
 k0 = 2 * pi / lambda0
 
-H = 267.00795001
+H = 1104.372816
 fourierMode = 5
 m_fourier = 2 * fourierMode + 1
 numLayers = 2
@@ -264,9 +264,9 @@ def solve_complex_field(theta_rad, H_optimized):
 # COMPUTE FIELDS — same theta, two different H values
 # =====================================================================
 
-theta_BIC = 1.51490625          # angle of the BIC resonance
-H_BIC = 267.00795001            # optimized grating height — achieves BIC
-H_off = 450                     # wrong height — breaks BIC condition
+theta_BIC = 16.024928          # angle of the BIC resonance
+H_BIC = 1104.372816           # optimized grating height — achieves BIC
+H_off = 700                     # wrong height — breaks BIC condition
 
 print("=" * 60)
 print("H SENSITIVITY: same theta, two different grating heights")

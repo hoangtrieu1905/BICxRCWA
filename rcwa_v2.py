@@ -166,8 +166,22 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     gPrime = lambda x, gratingPeriod: -2 * x / 50 ** 2 * g(x, gratingPeriod)
 
     # Coordinate transform using H_val.
-    S = lambda y: 0.5 * (1 + np.cos(pi / H_val * (y - H_val)))
-    SPrime = lambda y: -(pi / (2 * H_val)) * (np.sin(pi / H_val * (y - H_val)))
+    #S = lambda y: 0.5 * (1 + np.cos(pi / H_val * (y - H_val)))
+    #SPrime = lambda y: -(pi / (2 * H_val)) * (np.sin(pi / H_val * (y - H_val)))
+    
+    # Coordinate transform using H_val (air) and dielectric thickness (700 nm)
+    H1 = H_val
+    H2 = 700.0
+
+    def S(y):
+        return np.where(y <= H1, 
+                        0.5 * (1 - np.cos(pi * y / H1)), 
+                        0.5 * (1 + np.cos(pi * (y - H1) / H2))) * ((y >= 0) & (y <= H1 + H2))
+
+    def SPrime(y):
+        return np.where(y <= H1, 
+                        (pi / (2 * H1)) * np.sin(pi * y / H1), 
+                        -(pi / (2 * H2)) * np.sin(pi * (y - H1) / H2)) * ((y >= 0) & (y <= H1 + H2))
     detDG = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
 
     a11 = lambda x, y: np.abs(detDG(x, y))
@@ -652,15 +666,24 @@ def run_overnight_bic_hunt():
     # --- STAGE 1: 2D Coarse Grid Scout ---
     print("Stage 1: Scouting 2D Parameter Space...")
     theta_vals = np.linspace(0.0, 15.0, 20)
-    H_vals = np.linspace(300.0, 800.0, 20)
+    H_vals = np.linspace(150.0, 800.0, 20)
     
     Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
     Intensity_grid = np.zeros_like(Theta_grid)
     
     # Calculate the 20x20 grid
+    total_iters = len(H_vals) * len(theta_vals)
+    current_iter = 0
     for i in range(len(H_vals)):
         for j in range(len(theta_vals)):
-            Intensity_grid[i, j] = objective_function([theta_vals[j], H_vals[i]])
+            current_iter += 1
+            print(f"Scouting grid point {current_iter}/{total_iters}: Theta = {theta_vals[j]:.4f}, H = {H_vals[i]:.4f}...", end="", flush=True)
+            try:
+                Intensity_grid[i, j] = objective_function([theta_vals[j], H_vals[i]])
+                print(f" Done. Intensity: {Intensity_grid[i, j]:.4e}")
+            except Exception as e:
+                print(f" ERROR: {e}")
+                raise
             
     # --- PLOT THE TERRAIN ---
     plt.figure(figsize=(8, 6))
@@ -717,11 +740,17 @@ def run_overnight_bic_hunt():
     print(f"-> Seeding Nelder-Mead downhill at x0 = {x0}...")
 
     # --- STAGE 3: Nelder-Mead Optimization ---
+    iteration_counter = [0]
+    def callback_fn(xk):
+        iteration_counter[0] += 1
+        print(f"Nelder-Mead Iteration {iteration_counter[0]}: Theta = {xk[0]:.6f}, H = {xk[1]:.6f}")
+
     result = opt.minimize(
         objective_function, 
         x0, 
         method='Nelder-Mead', 
-        options={'xatol': 1e-5, 'fatol': 1e-8, 'disp': True}
+        options={'xatol': 1e-5, 'fatol': 1e-8, 'disp': True},
+        callback=callback_fn
     )
     
     if result.success:
@@ -743,22 +772,29 @@ def run_overnight_bic_hunt():
         
         print("Stage 4: Generating Phase and Intensity Maps...")
         plot_phase_vortex(result.x[0], result.x[1])
+        optimal_theta, optimal_H = result.x[0], result.x[1]
     else:
         print("\nOptimization failed to converge.")
+        optimal_theta, optimal_H = None, None
 
     elapsed = (time.time() - start_time) / 3600
     print(f"\n=== PIPELINE COMPLETE. Total runtime: {elapsed:.2f} hours ===")
+    
+    return optimal_theta, optimal_H
 
 
 if __name__ == "__main__":
     #run_two_stage_sweeps()
     #run_optimization()
     #plot_phase_vortex()
-    run_overnight_bic_hunt()   #This is the correct function to run the entire 2D pipeline from scratch, but it will take many hours to complete.
+    optimal_theta, optimal_H = run_overnight_bic_hunt()   #This is the correct function to run the entire 2D pipeline from scratch, but it will take many hours to complete.
     
     # Run ONLY the phase map around the known absolute zero
-    optimal_theta = 1.51490625
-    optimal_H = 267.00795001
+    # optimal_theta = 1.51490625
+    # optimal_H = 267.00795001
     
-    print("Running targeted phase map to calculate winding number...")
-    plot_phase_vortex(optimal_theta, optimal_H)
+    if optimal_theta is not None and optimal_H is not None:
+        print("Running targeted phase map to calculate winding number...")
+        plot_phase_vortex(optimal_theta, optimal_H)
+    else:
+        print("Failed to find optimal parameters. Skipping phase map.")
