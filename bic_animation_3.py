@@ -369,10 +369,13 @@ ax_bic.text(-220, H_BIC * 0.3, 'NO\nREFLECTION!', fontsize=12,
             color='green', fontweight='bold', alpha=0.8,
             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
-# Shared colorbar
-cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-cbar = fig.colorbar(cm_bic, cax=cbar_ax)
+# Shared colorbar: place slightly inset and format ticks/label
+cm_off.set_clim(vmin, vmax)
+cm_bic.set_clim(vmin, vmax)
+cbar_ax = fig.add_axes([0.915, 0.15, 0.02, 0.7])
+cbar = fig.colorbar(cm_bic, cax=cbar_ax, format='%.2f')
 cbar.set_label(r'Re[$H_y(\mathbf{r}) \cdot e^{-i\omega t}$]', fontsize=13)
+cbar.ax.tick_params(labelsize=11)
 
 # Time indicator
 time_text = fig.text(0.45, 0.02,
