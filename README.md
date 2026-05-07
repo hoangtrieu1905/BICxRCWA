@@ -113,3 +113,4 @@ For this narrow grating (`σ/L≈0.1`), use **at least `M=10`** for scouting.
 
 - MATLAB original: Dr. Benjamin Civiletti
 - Python implementation and project development: Hoang Trieu
+- Readme: Copilot
