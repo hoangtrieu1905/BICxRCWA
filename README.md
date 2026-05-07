@@ -6,7 +6,7 @@ Bound-state-in-the-continuum (BIC) search for a 1D dielectric grating using a co
 
 **No physical BIC is confirmed yet.**
 
-- The previously reported near-zero point at `(θ≈13.42°, slab≈783.95 nm)` is a **ghost BIC** caused by low Fourier truncation (`M=5`).
+- The previously reported near-zero point at `(θ≈13.42°, slab≈783.95 nm, where slab = slab_thickness)` is a **ghost BIC** caused by low Fourier truncation (`M=5`).
 - That point gives `|r₀|²≈1.5e-14` at `M=5` but jumps to nonzero values at higher modes (`M=10,15`), so it is not physical.
 - The codebase now includes a mandatory convergence stage to reject such artifacts.
 
@@ -106,7 +106,7 @@ For this narrow grating (`σ/L≈0.1`), use **at least `M=10`** for scouting.
 ## Notes
 
 - `manual_seeds.json` comes from a low-mode scout and should not be trusted without high-mode recheck.
-- Known problematic slab row near `283.33 nm` can violate energy conservation (`T0_Reflection > 1`) and should be excluded from analysis.
+- Known problematic slab row near `283.33 nm` can violate energy conservation (the code/log variable `T0_Reflection` exceeds 1.0), so that row should be excluded from analysis.
 - Heatmaps should be plotted on a **log scale** for meaningful BIC candidate visibility.
 
 ## Credits
