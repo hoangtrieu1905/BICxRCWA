@@ -27,9 +27,9 @@ import time
 # PIPELINE CONTROL FLAGS  (edit these before each run)
 # ============================================================
 RUN_SCOUT       = False   # Stage 1 — 2D grid scout. Skip if scout_data.npz exists.
-RUN_DESCENT     = True    # Stage 2 — Nelder-Mead from seeds.
-RUN_PHASE_MAP   = True    # Stage 3 — Phase vortex + intensity crater plots.
-RUN_CONVERGENCE = False    # Stage 4 — Fourier mode convergence check.
+RUN_DESCENT     = False    # Stage 2 — Nelder-Mead from seeds.
+RUN_PHASE_MAP   = False    # Stage 3 — Phase vortex + intensity crater plots.
+RUN_CONVERGENCE = True    # Stage 4 — Fourier mode convergence check.
 
 # If RUN_SCOUT = False, descent will load from this seeds file instead.
 # Set to None to load seeds from results/scout_data.npz auto-detection.
