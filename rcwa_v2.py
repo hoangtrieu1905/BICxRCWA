@@ -862,4 +862,4 @@ if __name__ == "__main__":
 
     # ── Stage 4: Convergence ─────────────────────────────────────
     if RUN_CONVERGENCE:
-        run_convergence(modes=(5, 10, 15))
+        run_convergence(modes=(5, 7, 9))
