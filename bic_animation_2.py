@@ -108,7 +108,8 @@ eta0 = np.sqrt(mu0 / epsilon0)
 lambda0 = 600
 k0 = 2 * pi / lambda0
 
-H = 267.00795001
+H_fixed = 700.0          # air buffer thickness (nm) — fixed, physically inert
+slab_thickness = 783.9477  # dielectric slab thickness (nm) — BIC-relevant
 fourierMode = 5
 m_fourier = 2 * fourierMode + 1
 numLayers = 2
@@ -117,18 +118,32 @@ yDiscreteSize = np.ones(numLayers)
 xDiscreteSize = 1
 sampleP = 500
 
-layerThick = np.array([H, 700], dtype=float)
-total_height = H + 700
+layerThick = np.array([H_fixed, slab_thickness], dtype=float)
+total_height = H_fixed + slab_thickness
 
 ep = np.empty(numLayers, dtype=object)
-ep[0] = 1 + 1j * 1e-9
-ep[1] = 12.0 + 0j
+ep[0] = 1 + 1j * 1e-9   # air layer (lower, [0, H_fixed])
+ep[1] = 12.0 + 0j        # dielectric slab (upper, [H_fixed, H_fixed+slab_thickness])
 
-g = lambda x, gP: 50 * np.exp(-(x / 50)**2)
+g = lambda x, gP: 100 * np.exp(-(x / 50)**2)
 gPrime = lambda x, gP: -2 * x / 50**2 * g(x, gP)
 
-S_func = lambda y: 0.5 * (1 + np.cos(pi / H * (y - H)))
-SPrime = lambda y: -(pi / (2*H)) * np.sin(pi / H * (y - H))
+# Piecewise asymmetric C-method coordinate transform (Bug 1 fix — do not revert)
+H1 = H_fixed
+H2 = slab_thickness
+
+def S_func(y):
+    return (np.where(y <= H1,
+                     0.5 * (1 - np.cos(pi * y / H1)),
+                     0.5 * (1 + np.cos(pi * (y - H1) / H2)))
+            * ((y >= 0) & (y <= H1 + H2)))
+
+def SPrime(y):
+    return (np.where(y <= H1,
+                     (pi / (2 * H1)) * np.sin(pi * y / H1),
+                     -(pi / (2 * H2)) * np.sin(pi * (y - H1) / H2))
+            * ((y >= 0) & (y <= H1 + H2)))
+
 detDG = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
 
 a11 = lambda x, y: np.abs(detDG(x, y))
@@ -175,14 +190,14 @@ def solve_complex_field(theta_rad):
         check = (yGrid[i] - yBound > 0)
         layer = np.where(check)[0][-1]
 
-        ep11 = lambda x: ep[layer] * a11(x, yGrid[i])
-        ep21 = lambda x: ep[layer] * a21(x, yGrid[i])
-        ep22_f = lambda x: ep[layer] * a22(x, yGrid[i])
-        ep33 = lambda x: ep[layer] * a11(x, yGrid[i])
-        mu11 = lambda x: a11(x, yGrid[i])
-        mu21 = lambda x: a21(x, yGrid[i])
-        mu22_f = lambda x: a22(x, yGrid[i])
-        mu33 = lambda x: a11(x, yGrid[i])
+        ep11 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
+        ep21 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a21(x, yi)
+        ep22_f = lambda x, l=layer, yi=yGrid[i]: ep[l] * a22(x, yi)
+        ep33 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
+        mu11 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
+        mu21 = lambda x, l=layer, yi=yGrid[i]: a21(x, yi)
+        mu22_f = lambda x, l=layer, yi=yGrid[i]: a22(x, yi)
+        mu33 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
 
         Tep11 = ToeplitzM(m_fourier, ep11, gratingPeriod, sampleP)
         Tep21 = ToeplitzM(m_fourier, ep21, gratingPeriod, sampleP)
@@ -303,8 +318,8 @@ def solve_complex_field(theta_rad):
 # COMPUTE FIELDS FOR TWO CASES
 # =====================================================================
 
-theta_BIC = 1.51490625
-theta_OFF = 8.57  # well away from BIC — strong reflection
+theta_BIC = 13.42159675   # STRONG_BIC: |r₀|² = 1.495935e-14
+theta_OFF = 8.57          # well away from BIC — strong reflection
 
 print("=" * 60)
 print("COMPUTING FIELDS FOR TIME-DEPENDENT ANIMATION")
@@ -348,7 +363,7 @@ print(f"Color scale: [{vmin:.2f}, {vmax:.2f}]")
 # =====================================================================
 
 yGrid_arr = np.array(yGrid)
-air_mask = yGrid_arr < H
+air_mask = yGrid_arr < H_fixed
 
 air_frames_off = [f[air_mask, :] for f in frames_off]
 air_frames_bic = [f[air_mask, :] for f in frames_bic]
@@ -372,7 +387,7 @@ cm_off = ax_off.pcolormesh(xGrid, yGrid_air, air_frames_off[0],
                             cmap=cmap, shading='auto',
                             vmin=vmin_air, vmax=vmax_air)
 ax_off.set_xlim([-gratingPeriod/2, gratingPeriod/2])
-ax_off.set_ylim([0, H])
+ax_off.set_ylim([0, H_fixed])
 ax_off.set_xlabel(r'$\hat{x}$ (nm)', fontsize=14)
 ax_off.set_ylabel(r'$\hat{y}$ (nm)', fontsize=14)
 ax_off.set_title(f'OFF-BIC: $\\theta = {theta_OFF}°$\n'
@@ -380,15 +395,15 @@ ax_off.set_title(f'OFF-BIC: $\\theta = {theta_OFF}°$\n'
                  fontsize=15, fontweight='bold', color='darkred')
 
 # Grating at top edge
-ax_off.axhline(y=H-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
-ax_off.text(0, H - 15, 'GRATING', fontsize=11, color='black',
+ax_off.axhline(y=H_fixed-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
+ax_off.text(0, H_fixed - 15, 'GRATING', fontsize=11, color='black',
             fontweight='bold', ha='center', va='top',
             bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
 
-ax_off.annotate('', xy=(-200, 30), xytext=(-200, H - 40),
+ax_off.annotate('', xy=(-200, 30), xytext=(-200, H_fixed - 40),
                 arrowprops=dict(arrowstyle='->', color='red',
                                lw=3, mutation_scale=20))
-ax_off.text(-185, H*0.45, 'REFLECTED\nWAVE', fontsize=11, color='red',
+ax_off.text(-185, H_fixed*0.45, 'REFLECTED\nWAVE', fontsize=11, color='red',
             fontweight='bold', alpha=0.9)
 
 # --- Right panel: BIC (air only) ---
@@ -396,19 +411,19 @@ cm_bic = ax_bic.pcolormesh(xGrid, yGrid_air, air_frames_bic[0],
                             cmap=cmap, shading='auto',
                             vmin=vmin_air, vmax=vmax_air)
 ax_bic.set_xlim([-gratingPeriod/2, gratingPeriod/2])
-ax_bic.set_ylim([0, H])
+ax_bic.set_ylim([0, H_fixed])
 ax_bic.set_xlabel(r'$\hat{x}$ (nm)', fontsize=14)
 ax_bic.set_ylabel(r'$\hat{y}$ (nm)', fontsize=14)
-ax_bic.set_title(f'BIC: $\\theta = {theta_BIC}°$\n'
+ax_bic.set_title(f'BIC: $\\theta = {theta_BIC:.4f}°$\n'
                  f'$|r_0|^2 = {np.abs(r0_bic)**2:.2e}$',
                  fontsize=15, fontweight='bold', color='darkgreen')
 
-ax_bic.axhline(y=H-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
-ax_bic.text(0, H - 15, 'GRATING', fontsize=11, color='black',
+ax_bic.axhline(y=H_fixed-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
+ax_bic.text(0, H_fixed - 15, 'GRATING', fontsize=11, color='black',
             fontweight='bold', ha='center', va='top',
             bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
 
-ax_bic.text(0, H*0.45, 'NO\nREFLECTION!', fontsize=14,
+ax_bic.text(0, H_fixed*0.45, 'Hopefully no\nreflection...', fontsize=14,
             color='green', fontweight='bold', alpha=0.9, ha='center',
             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
