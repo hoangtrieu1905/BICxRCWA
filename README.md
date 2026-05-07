@@ -15,7 +15,7 @@ Bound-state-in-the-continuum (BIC) search for a 1D dielectric grating using a co
 - Wavelength: `λ₀ = 600 nm`
 - Period: `L = 500 nm`
 - Grating profile: Gaussian, amplitude `100 nm`, width `σ = 50 nm`
-- Permittivity: air `ε = 1 + i·1e-9`, dielectric `ε = 12`
+- Permittivity: air `ε = 1 + i·10⁻⁹`, dielectric `ε = 12`
 - Geometry:
   - `H_fixed` = air buffer thickness (default `700 nm`, fixed)
   - `slab_thickness` = dielectric slab thickness (optimization variable)
@@ -81,8 +81,8 @@ for M in [10, 15, 20]:
 
 Interpretation:
 
-- **Physical candidate**: remains near zero (or shifts smoothly while remaining very small).
-- **Ghost candidate**: jumps by orders of magnitude between `M` and `M+5`.
+- **Physical candidate**: remains near zero (typically `< 10⁻⁶`) across `M=10,15,20`, or shifts less than scout-grid resolution while staying very small.
+- **Ghost candidate**: jumps by multiple orders of magnitude between `M` and `M+5` (e.g., from near machine zero to `~10⁻¹`).
 
 For this narrow grating (`σ/L≈0.1`), use **at least `M=10`** for scouting.
 
