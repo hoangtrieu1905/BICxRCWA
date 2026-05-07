@@ -106,7 +106,7 @@ For this narrow grating (`σ/L≈0.1`), use **at least `M=10`** for scouting.
 ## Notes
 
 - `manual_seeds.json` comes from a low-mode scout and should not be trusted without high-mode recheck.
-- Known problematic slab row near `283.33 nm` can violate energy conservation (legacy script/log variable name `T0_Reflection` exceeds 1.0), so that row should be excluded from analysis.
+- Known problematic slab row near `283.33 nm` can violate energy conservation; in legacy scripts/logs this appears as `T0_Reflection > 1.0` (historical name, used as a reflection diagnostic there), so that row should be excluded from analysis.
 - Heatmaps should be plotted on a **log scale** for meaningful BIC candidate visibility.
 
 ## Credits
