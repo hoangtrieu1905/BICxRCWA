@@ -6,7 +6,7 @@ Bound-state-in-the-continuum (BIC) search for a 1D dielectric grating using a co
 
 **No physical BIC is confirmed yet.**
 
-- The previously reported near-zero point at `(θ≈13.42°, slab≈783.95 nm)` is a **Ghost BIC** caused by low Fourier truncation (`M=5`).
+- The previously reported near-zero point at `(θ≈13.42°, slab≈783.95 nm)` is a **ghost BIC** caused by low Fourier truncation (`M=5`).
 - That point gives `|r₀|²≈1.5e-14` at `M=5` but jumps to nonzero values at higher modes (`M=10,15`), so it is not physical.
 - The codebase now includes a mandatory convergence stage to reject such artifacts.
 
