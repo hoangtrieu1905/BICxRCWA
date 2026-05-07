@@ -4,7 +4,13 @@ Author: Matlab Code - Dr. Benjamin Civiletti /
         Python Code - Hoang Trieu
 
 First Updated: June 6, 2024
-Last Updated: May 2, 2026
+Last Updated: May 6, 2026
+
+Pipeline stages (each independently callable, reads/writes disk):
+  run_scout()       → results/scout_data.npz
+  run_descent()     → results/descent_results.json
+  run_phase_map()   → phase_vortex_dielectric.png, intensity_crater_dielectric.png
+  run_convergence() → console table (no file output)
 """
 
 from math import *
@@ -12,9 +18,31 @@ from numpy import pi, sin
 import numpy as np
 from scipy import linalg
 import scipy
+import os
+import json
+import time
 
 
-"""Helper Functions"""
+# ============================================================
+# PIPELINE CONTROL FLAGS  (edit these before each run)
+# ============================================================
+RUN_SCOUT       = False   # Stage 1 — 2D grid scout. Skip if scout_data.npz exists.
+RUN_DESCENT     = True    # Stage 2 — Nelder-Mead from seeds.
+RUN_PHASE_MAP   = True    # Stage 3 — Phase vortex + intensity crater plots.
+RUN_CONVERGENCE = False    # Stage 4 — Fourier mode convergence check.
+
+# If RUN_SCOUT = False, descent will load from this seeds file instead.
+# Set to None to load seeds from results/scout_data.npz auto-detection.
+MANUAL_SEEDS_FILE = "manual_seeds.json"
+
+# Output directory for all saved results.
+RESULTS_DIR = "results"
+
+
+# ============================================================
+# HELPER FUNCTIONS  (untouched from original)
+# ============================================================
+
 def gridC(numLayers, gratingPeriod, layerThick, xDiscreteSize, yDiscreteSize):
     """Calculate x/y grid points and layer boundaries."""
     xSpacingNum = gratingPeriod / xDiscreteSize
@@ -47,9 +75,9 @@ def gridC(numLayers, gratingPeriod, layerThick, xDiscreteSize, yDiscreteSize):
 
 def create_Y_matrix(matrix1, matrix2, matrix3, matrix4):
     """Build the block matrix Y from four sub-matrices."""
-    Y_top = np.concatenate((matrix1, matrix2), axis=1)
+    Y_top    = np.concatenate((matrix1, matrix2), axis=1)
     Y_bottom = np.concatenate((matrix3, matrix4), axis=1)
-    Y = np.concatenate((Y_top, Y_bottom), axis=0)
+    Y        = np.concatenate((Y_top, Y_bottom), axis=0)
     return Y
 
 
@@ -65,10 +93,8 @@ def simpson(f, left, right, numSub):
         raise ValueError("Invalid input for f at the simpson function.")
 
     array1 = y[1:numSub:2]
-    array2 = y[2 : (numSub - 1) : 2]
-    sumArray1 = np.sum(array1)
-    sumArray2 = np.sum(array2)
-    approxInt = (h / 3) * (y[0] + y[numSub] + 4 * sumArray1 + 2 * sumArray2)
+    array2 = y[2:(numSub - 1):2]
+    approxInt = (h / 3) * (y[0] + y[numSub] + 4 * np.sum(array1) + 2 * np.sum(array2))
     return approxInt
 
 
@@ -76,20 +102,19 @@ def bisection(f, left, right, TOL):
     """Bisection root finder on [left, right]."""
     n = 0
     if f(left) * f(right) >= 0:
-        raise ValueError("There is no root of f(x) in [" + str(left) + "," + str(right) + "]")
-
+        raise ValueError(
+            "There is no root of f(x) in [" + str(left) + "," + str(right) + "]"
+        )
     while (right - left) / 2 > TOL:
         mid = (left + right) / 2
         if f(mid) == 0:
             break
-
         if f(left) * f(mid) < 0:
             right = mid
         else:
             left = mid
         n += 1
-    root = (right + left) / 2
-    return root, n
+    return (right + left) / 2, n
 
 
 def ToeplitzM(m, f, L, sampleP):
@@ -100,12 +125,10 @@ def ToeplitzM(m, f, L, sampleP):
     j = np.arange(-ind, ind + 1)
     if callable(f):
         for i in range(n):
-            k = lambda x: f(x) * np.exp(-2 * pi * 1j * j[i] * x / L)
+            k = lambda x, ji=j[i]: f(x) * np.exp(-2 * pi * 1j * ji * x / L)
             fftvec[i] = (1 / L) * simpson(k, -L / 2, L / 2, sampleP)
     elif isinstance(f, np.ndarray):
         for i in range(n):
-            ind = (n - 1) / 2
-            j = np.arange(-ind, ind + 1)
             x = np.linspace(-L / 2, L / 2, sampleP + 1)
             basis = np.exp(-2 * pi * 1j * j[i] * x / L)
             if len(basis) != len(f):
@@ -115,85 +138,116 @@ def ToeplitzM(m, f, L, sampleP):
     else:
         raise ValueError("Invalid input for f at ToeplitzM function")
 
-    fftvec0pos = fftvec[m - 1 :]
+    fftvec0pos = fftvec[m - 1:]
     fftvec0neg = np.flip(fftvec[:m])
     T = linalg.toeplitz(fftvec0pos, fftvec0neg)
     return T
 
 
 def invMap(x, y, g, S, yGrid, H, gratingPeriod):
-    """Inverse coordinate map helper (retained for compatibility)."""
+    """Inverse coordinate map helper (retained for compatibility — dead code, do not call)."""
     xHat = x
-    C = g(x, gratingPeriod)
-    F = lambda x: C * S(x) - x + y
-    yHat, _ = bisection(F, 0, 2 * H, 10**-3)
-    yGrid = np.array(yGrid)
-    index = np.argmin(np.abs(yHat - yGrid))
+    C    = g(x, gratingPeriod)
+    F    = lambda x: C * S(x) - x + y
+    yHat, _ = bisection(F, 0, 2 * H, 10 ** -3)
+    yGrid    = np.array(yGrid)
+    index    = np.argmin(np.abs(yHat - yGrid))
     return xHat, yHat, index
 
 
-"""Physical Constants"""
-epsilon0 = 8.854 * 10 ** (-12)
-mu0 = 4 * pi * 10 ** (-7)
-eta0 = np.sqrt(mu0 / epsilon0)
-lambda0 = 600
-k0 = 2 * pi / lambda0
-omega = k0 / eta0
+# ============================================================
+# PHYSICAL CONSTANTS
+# ============================================================
+epsilon0 = 8.854e-12
+mu0      = 4 * pi * 1e-7
+eta0     = np.sqrt(mu0 / epsilon0)
+lambda0  = 600
+k0       = 2 * pi / lambda0
+omega    = k0 / eta0
 
 
-def get_reflection(theta_inc, H_val, p_pol='p'):
-    """Return the complex zeroth-order reflection coefficient for a 1D C-RCWA solve."""
+# ============================================================
+# CORE SOLVER
+# ============================================================
+
+def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
+    """
+    Return the complex zeroth-order reflection coefficient r₀ for a 1D C-RCWA solve.
+
+    Parameters
+    ----------
+    theta_val      : float  — incidence angle in RADIANS
+    slab_thickness : float  — dielectric slab thickness in nm  (BIC-relevant parameter)
+    H_fixed        : float  — air buffer thickness in nm        (physically inert ≥ ~600 nm)
+    p_pol          : 's' or 'p'
+    fourierMode    : int    — number of Fourier modes ±N (default 5, i.e. 11 total)
+    """
     if p_pol not in ('s', 'p'):
         raise ValueError("p_pol must be either 's' or 'p'.")
 
-    # Solver defaults retained from the original script.
-    fourierMode = 5
-    m = 2 * fourierMode + 1
-    numLayers = 2
-    gratingPeriod = 500
-    yDiscreteSize = np.ones(numLayers)
-    xDiscreteSize = 1
-    # Ensure the physical grid dynamically updates with H_val!
-    layerThick = np.array([H_val, 700], dtype=float)
-    ep = np.empty(numLayers, dtype=object)
-    ep[0] = 1 + 1j * 10 ** (-9)
-    ep[1] = 12.0 + 0j
-    sampleP = 500
-    method = 'C'
+    m          = 2 * fourierMode + 1
+    numLayers  = 2
+    gratingPeriod  = 500
+    yDiscreteSize  = np.ones(numLayers)
+    xDiscreteSize  = 1
+    layerThick     = np.array([H_fixed, slab_thickness], dtype=float)
+    ep             = np.empty(numLayers, dtype=object)
+    ep[0]          = 1 + 1j * 1e-9      # air (tiny imaginary part for stability)
+    ep[1]          = 12.0 + 0j          # silicon-like dielectric
+    sampleP        = 500
 
-    # Grating profile and derivative.
-    g = lambda x, gratingPeriod: 50 * np.exp(-(x / 50) ** 2)
-    gPrime = lambda x, gratingPeriod: -2 * x / 50 ** 2 * g(x, gratingPeriod)
+    # Grating profile  (amplitude=100 nm, width σ=50 nm, Gaussian)
+    g      = lambda x, gP: 100 * np.exp(-(x / 50) ** 2)
+    gPrime = lambda x, gP: -2 * x / 50 ** 2 * g(x, gP)
 
-    # Coordinate transform using H_val.
-    S = lambda y: 0.5 * (1 + np.cos(pi / H_val * (y - H_val)))
-    SPrime = lambda y: -(pi / (2 * H_val)) * (np.sin(pi / H_val * (y - H_val)))
+    # Piecewise asymmetric C-method coordinate transform
+    # S(0)=0, S(H1)=1, S(H1+H2)=0  — C¹ globally, C² at interface
+    H1 = H_fixed
+    H2 = slab_thickness
+
+    def S(y):
+        return (
+            np.where(
+                y <= H1,
+                0.5 * (1 - np.cos(pi * y / H1)),
+                0.5 * (1 + np.cos(pi * (y - H1) / H2)),
+            )
+            * ((y >= 0) & (y <= H1 + H2))
+        )
+
+    def SPrime(y):
+        return (
+            np.where(
+                y <= H1,
+                (pi / (2 * H1)) * np.sin(pi * y / H1),
+                -(pi / (2 * H2)) * np.sin(pi * (y - H1) / H2),
+            )
+            * ((y >= 0) & (y <= H1 + H2))
+        )
+
     detDG = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
-
-    a11 = lambda x, y: np.abs(detDG(x, y))
-    a21 = lambda x, y: -np.sign(detDG(x, y)) * S(y) * gPrime(x, gratingPeriod)
-    a12 = lambda x, y: a21(x, y)
-    a22 = lambda x, y: ((S(y) * gPrime(x, gratingPeriod)) ** 2 + 1) / np.abs(detDG(x, y))
+    a11   = lambda x, y: np.abs(detDG(x, y))
+    a21   = lambda x, y: -np.sign(detDG(x, y)) * S(y) * gPrime(x, gratingPeriod)
+    a12   = lambda x, y: a21(x, y)
+    a22   = lambda x, y: ((S(y) * gPrime(x, gratingPeriod)) ** 2 + 1) / np.abs(detDG(x, y))
 
     xGrid, yGrid, yBound = gridC(
         numLayers, gratingPeriod, layerThick, xDiscreteSize, yDiscreteSize
     )
     yGridN = np.size(yGrid)
 
-    gR = lambda x, gratingPeriod: -g(x, gratingPeriod) + H_val
-
     k_vector = np.arange(-fourierMode, fourierMode + 1, dtype=complex)
-    k = k0 * sin(theta_inc) + 2 * pi * k_vector / gratingPeriod
-    K = np.diag(k)
-    beta = np.sqrt(k0 ** 2 - k ** 2)
+    k        = k0 * sin(theta_val) + 2 * pi * k_vector / gratingPeriod
+    K        = np.diag(k)
+    beta     = np.sqrt(k0 ** 2 - k ** 2)
 
     O = np.zeros((m, m))
     I = np.eye(m, m)
 
-    Ye_p = create_Y_matrix(O, -np.diag(beta / k0), I, O)
-    Ye_m = create_Y_matrix(O, np.diag(beta / k0), I, O)
+    Ye_p = create_Y_matrix(O, -np.diag(beta / k0), I,  O)
+    Ye_m = create_Y_matrix(O,  np.diag(beta / k0), I,  O)
     Yh_p = create_Y_matrix(-np.diag(beta / k0), O, O, -I)
-    Yh_m = create_Y_matrix(np.diag(beta / k0), O, O, -I)
+    Yh_m = create_Y_matrix( np.diag(beta / k0), O, O, -I)
 
     A = np.zeros((4 * fourierMode + 2, 1), dtype=complex)
     if p_pol == 's':
@@ -201,564 +255,611 @@ def get_reflection(theta_inc, H_val, p_pol='p'):
     else:
         A[3 * fourierMode + 1] = 1
 
-    Zs = np.empty(yGridN + 1, dtype=object)
-    Zs[yGridN] = np.concatenate((Ye_p, Yh_p), axis=0)
+    Zs          = np.empty(yGridN + 1, dtype=object)
+    Zs[yGridN]  = np.concatenate((Ye_p, Yh_p), axis=0)
 
     for i in range(yGridN - 1, -1, -1):
         check = yGrid[i] - yBound > 0
         layer = np.where(check)[0][-1]
 
-        if method == 'C':
-            ep11 = lambda x: ep[layer] * a11(x, yGrid[i])
-            ep21 = lambda x: ep[layer] * a21(x, yGrid[i])
-            ep12 = lambda x: ep[layer] * a12(x, yGrid[i])
-            ep22 = lambda x: ep[layer] * a22(x, yGrid[i])
-            ep33 = lambda x: ep[layer] * a11(x, yGrid[i])
+        ep11 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
+        ep21 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a21(x, yi)
+        ep12 = ep21
+        ep22 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a22(x, yi)
+        ep33 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
 
-            mu11 = lambda x: a11(x, yGrid[i])
-            mu21 = lambda x: a21(x, yGrid[i])
-            mu12 = lambda x: a12(x, yGrid[i])
-            mu22 = lambda x: a22(x, yGrid[i])
-            mu33 = lambda x: a11(x, yGrid[i])
+        mu11 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
+        mu21 = lambda x, l=layer, yi=yGrid[i]: a21(x, yi)
+        mu12 = mu21
+        mu22 = lambda x, l=layer, yi=yGrid[i]: a22(x, yi)
+        mu33 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
 
-            Tep11 = ToeplitzM(m, ep11, gratingPeriod, sampleP)
-            Tep21 = ToeplitzM(m, ep21, gratingPeriod, sampleP)
-            Tep12 = Tep21
-            Tep22 = ToeplitzM(m, ep22, gratingPeriod, sampleP)
-            Tep33 = ToeplitzM(m, ep33, gratingPeriod, sampleP)
+        Tep11 = ToeplitzM(m, ep11, gratingPeriod, sampleP)
+        Tep21 = ToeplitzM(m, ep21, gratingPeriod, sampleP)
+        Tep12 = Tep21
+        Tep22 = ToeplitzM(m, ep22, gratingPeriod, sampleP)
+        Tep33 = ToeplitzM(m, ep33, gratingPeriod, sampleP)
 
-            Tmu11 = (ep[layer] ** (-1)) * Tep11
-            Tmu21 = (ep[layer] ** (-1)) * Tep21
-            Tmu12 = Tmu21
-            Tmu22 = (ep[layer] ** (-1)) * Tep22
-            Tmu33 = (ep[layer] ** (-1)) * Tep33
+        Tmu11 = (ep[layer] ** -1) * Tep11
+        Tmu21 = (ep[layer] ** -1) * Tep21
+        Tmu12 = Tmu21
+        Tmu22 = (ep[layer] ** -1) * Tep22
+        Tmu33 = (ep[layer] ** -1) * Tep33
 
-            P11 = K @ (linalg.solve(Tep22, Tep21))
-            P14 = k0 * Tmu33 - (1 / k0) * K @ (linalg.solve(Tep22, K))
-            P22 = Tmu12 @ (linalg.solve(Tmu22, K))
-            P23 = -k0 * (Tmu11 - Tmu12 @ (linalg.solve(Tmu22, Tmu21)))
-            P32 = -k0 * Tep33 + (1 / k0) * K @ (linalg.solve(Tmu22, K))
-            P33 = K @ (linalg.solve(Tmu22, Tmu21))
-            P41 = -k0 * (Tep12 @ (linalg.solve(Tep22, Tep21)) - Tep11)
-            P44 = Tep12 @ linalg.solve(Tep22, K)
+        P11 = K @ linalg.solve(Tep22, Tep21)
+        P14 = k0 * Tmu33 - (1 / k0) * K @ linalg.solve(Tep22, K)
+        P22 = Tmu12 @ linalg.solve(Tmu22, K)
+        P23 = -k0 * (Tmu11 - Tmu12 @ linalg.solve(Tmu22, Tmu21))
+        P32 = -k0 * Tep33 + (1 / k0) * K @ linalg.solve(Tmu22, K)
+        P33 = K @ linalg.solve(Tmu22, Tmu21)
+        P41 = -k0 * (Tep12 @ linalg.solve(Tep22, Tep21) - Tep11)
+        P44 = Tep12 @ linalg.solve(Tep22, K)
 
-            P = np.block(
-                [
-                    [P11, O, O, P14],
-                    [O, P22, P23, O],
-                    [O, P32, P33, O],
-                    [P41, O, O, P44],
-                ]
-            )
+        P = np.block([
+            [P11, O,   O,   P14],
+            [O,   P22, P23, O  ],
+            [O,   P32, P33, O  ],
+            [P41, O,   O,   P44],
+        ])
 
-        elif method == 'R':
-            ind = np.where(gR(xGrid, gratingPeriod) < yGrid[i])[0]
+        Delta = 1 if (i == 0 or i == yGridN - 1) else yGrid[i] - yGrid[i - 1]
 
-            if np.size(ind) == np.size(xGrid, 0):
-                ep11 = lambda x: ep[layer]
-                ep22 = lambda x: ep11(x)
-                ep33 = lambda x: ep11(x)
-            elif (np.size(ind) != np.size(xGrid, 0)) and np.size(ind) != 0:
-                xL = xGrid[ind[0]]
-                xR = xGrid[ind[np.size(ind) - 1]]
-                ep11 = lambda x: (x < xL) * ep[0] + (x > xR) * ep[0] + ((x >= xL) & (x <= xR)) * ep[1]
-                ep22 = lambda x: ep11(x)
-                ep33 = lambda x: ep11(x)
-            elif ind.size == 0:
-                ep11 = lambda x: ep[layer]
-                ep22 = lambda x: ep11(x)
-                ep33 = lambda x: ep11(x)
+        D, G   = np.linalg.eig(P)
+        D      = np.diag(D)
+        Ddiag  = np.diag(D)
+        idx    = np.argsort(np.imag(Ddiag))[::-1]
+        Ddiag  = Ddiag[idx]
+        D      = np.diag(Ddiag)
+        G      = G[:, idx]
 
-            Tep11 = ToeplitzM(m, ep11, gratingPeriod, sampleP)
-            Tep21 = O
-            Tep12 = O
-            Tep22 = Tep11
-            Tep33 = Tep11
+        W   = linalg.solve(G, Zs[i + 1])
+        Wu  = W[:4 * fourierMode + 2, :]
+        Wl  = W[4 * fourierMode + 2:, :]
+        Dl  = D[4 * fourierMode + 2:, 4 * fourierMode + 2:]
 
-            Tmu11 = I
-            Tmu21 = O
-            Tmu12 = O
-            Tmu22 = I
-            Tmu33 = I
-
-            P14 = k0 * Tmu33 - (1 / k0) * K @ (linalg.solve(Tep22, K))
-            P32 = -k0 * Tep33 + (1 / k0) * K @ (linalg.solve(Tmu22, K))
-            P41 = -k0 * (Tep12 @ (linalg.solve(Tep22, Tep21)) - Tep11)
-            P23 = -k0 * (Tmu11 - Tmu12 @ (linalg.solve(Tmu22, Tmu21)))
-
-            P = np.block([[O, O, O, P14], [O, O, P23, O], [O, P32, O, O], [P41, O, O, O]])
-
-        if i == 0 or i == yGridN - 1:
-            Delta = 1
-        else:
-            Delta = yGrid[i] - yGrid[i - 1]
-
-        D, G = np.linalg.eig(P)
-        D = np.diag(D)
-
-        Ddiag = np.diag(D)
-        ind = np.argsort(np.imag(Ddiag))[::-1]
-        Ddiag = Ddiag[ind]
-        D = np.diag(Ddiag)
-        G = G[:, ind]
-        W = linalg.solve(G, Zs[i + 1])
-        Wu = W[0 : 4 * fourierMode + 2, :]
-        Wl = W[4 * fourierMode + 2 :, :]
-        Dl = D[4 * fourierMode + 2 :, 4 * fourierMode + 2 :]
         expmat1 = scipy.linalg.expm(-1j * Delta * Dl)
-        expmat2 = scipy.linalg.expm(1j * Delta * D[0 : 4 * fourierMode + 2, 0 : 4 * fourierMode + 2])
+        expmat2 = scipy.linalg.expm( 1j * Delta * D[:4 * fourierMode + 2, :4 * fourierMode + 2])
 
-        block_matrix = np.block(
-            [
-                [np.eye(4 * fourierMode + 2)],
-                [expmat1 @ Wl @ np.linalg.solve(Wu, expmat2)],
-            ]
-        )
+        block_matrix = np.block([
+            [np.eye(4 * fourierMode + 2)],
+            [expmat1 @ Wl @ np.linalg.solve(Wu, expmat2)],
+        ])
         Zs[i] = G @ block_matrix
 
-    Z0u = Zs[0][0 : 4 * fourierMode + 2, :]
-    Z0l = Zs[0][4 * fourierMode + 2 :, :]
+    Z0u = Zs[0][:4 * fourierMode + 2, :]
+    Z0l = Zs[0][4 * fourierMode + 2:, :]
 
-    top = np.block([[Z0u, -Ye_m], [Z0l, -Yh_m]])
+    top    = np.block([[Z0u, -Ye_m], [Z0l, -Yh_m]])
     bottom = np.block([[Ye_p], [Yh_p]])
-    X = scipy.linalg.solve(top, bottom)
-    T0R = X @ A
+    X      = scipy.linalg.solve(top, bottom)
+    T0R    = X @ A
 
-    if theta_inc == 0.0:
-        diagnostic_offset = 4 * fourierMode + 2
-        t_index = 3 * fourierMode + 1
-        r_index = diagnostic_offset + 3 * fourierMode + 1
-        print("\n=== MATRIX DIAGNOSTIC (Theta = 0.0) ===")
-        print(f"Calculated T0_Transmission at Index {t_index}: {np.abs(T0R[t_index, 0])**2:.6e}")
-        print(f"Calculated T0_Reflection   at Index {r_index}: {np.abs(T0R[r_index, 0])**2:.6f}")
-        print("=======================================\n")
-    # ---------------------------------------
     offset = 4 * fourierMode + 2
     if p_pol == 's':
         return T0R[offset + fourierMode, 0]
     else:
-        # For p-pol, specular reflection is exactly at index 38
         return T0R[offset + 3 * fourierMode + 1, 0]
 
-#Define the objective function 
-def objective_function(params):
-    theta_deg = params[0]
-    H_val = params[1]
-    
-    # Convert degrees to radians for the physics engine
-    theta_rad = np.radians(theta_deg)
-    
-    # Get the complex scalar
-    r_0 = get_reflection(theta_rad, H_val)
-    
-    # Return the intensity |r_0|^2
-    intensity = np.abs(r_0)**2
-    return intensity
 
-def run_two_stage_sweeps():
-    """Run two 1D parameter sweeps using objective_function.
+# ============================================================
+# OBJECTIVE FUNCTION
+# ============================================================
 
-    Stage 1: fix H=700, sweep theta in [0, 15] deg with 15 points.
-    Stage 2: prompt for theta, then fix theta and sweep H in [600, 800] with 15 points.
+def objective_function(params, fourierMode=5):
+    """Scalar |r₀|² for optimizer.  params = [theta_deg, slab_nm]."""
+    theta_deg, slab_nm = params[0], params[1]
+    r_0 = get_reflection(np.radians(theta_deg), slab_nm, fourierMode=fourierMode)
+    return float(np.abs(r_0) ** 2)
+
+
+# ============================================================
+# STAGE 1 — 2D SCOUT
+# ============================================================
+
+def run_scout(
+    theta_range=(0.0, 30.0), n_theta=30,
+    slab_range=(200.0, 1200.0), n_slab=25,
+    output_dir=RESULTS_DIR,
+):
+    """
+    Evaluate |r₀|² on a 2D grid and save to scout_data.npz.
+
+    Skips automatically if scout_data.npz already exists.
     """
     import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
 
-    # Stage 1: theta sweep at fixed H.
-    H_fixed = 700.0
-    theta_values = np.linspace(0.0, 15.0, 15)
-    theta_intensities = np.array([objective_function([theta, H_fixed]) for theta in theta_values])
+    out_npz = os.path.join(output_dir, "scout_data.npz")
+    if os.path.exists(out_npz):
+        print(f"[SCOUT] scout_data.npz already exists — skipping scout. Delete to re-run.")
+        return
 
-    best_idx = int(np.argmin(theta_intensities))
-    best_theta_auto = float(theta_values[best_idx])
-    best_intensity_auto = float(theta_intensities[best_idx])
+    os.makedirs(output_dir, exist_ok=True)
 
-    print("\nStage 1 complete (H = 700).")
-    print(f"Best theta from sweep: {best_theta_auto:.4f} deg (intensity = {best_intensity_auto:.6e})")
+    theta_vals = np.linspace(*theta_range, n_theta)
+    slab_vals  = np.linspace(*slab_range,  n_slab)
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(theta_values, theta_intensities, marker='o', linewidth=1.5)
-    plt.xlabel('Theta (deg)')
-    plt.ylabel('|r_0|^2')
-    plt.title('Stage 1: Theta Sweep at H = 700')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show(block=False)
+    Theta_grid, Slab_grid = np.meshgrid(theta_vals, slab_vals)
+    intensity_map = np.zeros_like(Theta_grid)
 
-    #Pause for user input before stage 2.
-    user_text = input(
-        f"Enter your chosen theta in degrees (press Enter to use {best_theta_auto:.4f}): "
-    ).strip()
-    if user_text == "":
-        theta_fixed = best_theta_auto
-    else:
-        theta_fixed = float(user_text)
+    total = n_theta * n_slab
+    current = 0
+    t0 = time.time()
 
-    print(f"\nUsing theta = {theta_fixed:.4f} deg for Stage 2.")
+    for i, slab in enumerate(slab_vals):
+        for j, theta in enumerate(theta_vals):
+            current += 1
+            print(f"  [{current}/{total}] theta={theta:.3f} deg, slab={slab:.1f} nm", end="", flush=True)
+            try:
+                intensity_map[i, j] = objective_function([theta, slab])
+                print(f"  → {intensity_map[i,j]:.4e}")
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                intensity_map[i, j] = np.nan
 
-    #Teporarily hardcode theta_fixed to the best from stage 1 for demonstration purposes.
-    #theta_fixed = 8.5714
-
-    # Stage 2: H sweep at fixed theta.
-    H_values = np.linspace(300.0, 700.0, 20)
-    H_intensities = np.array([objective_function([theta_fixed, H_val]) for H_val in H_values])
-
-    best_h_idx = int(np.argmin(H_intensities))
-    best_H = float(H_values[best_h_idx])
-    best_h_intensity = float(H_intensities[best_h_idx])
-
-    print(f"Best H from sweep: {best_H:.4f} (intensity = {best_h_intensity:.6e})")
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(H_values, H_intensities, marker='o', linewidth=1.5)
-    plt.xlabel('H')
-    plt.ylabel('|r_0|^2')
-    plt.title(f'Stage 2: H Sweep at Theta = {theta_fixed:.4f} deg')
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-def run_optimization():
-    """Run Nelder-Mead optimization to perfectly trap the BIC."""
-    import scipy.optimize as opt
-    import time
-
-    # The exact coordinate we found from the Stage 2 sweep
-    x0 = [8.5714, 447.3684]
-    
-    print(f"Starting Nelder-Mead optimization from x0 = {x0}...")
-    print("This may take some time depending on how many steps it needs. Grab a coffee!\n")
-    
-    start_time = time.time()
-    
-    # Run the continuous optimization
-    result = opt.minimize(
-        objective_function, 
-        x0, 
-        method='Nelder-Mead', 
-        options={
-            'xatol': 1e-4,   # Tolerance for coordinate step size
-            'fatol': 1e-6,   # Tolerance for intensity minimum
-            'disp': True     # Print convergence messages
-        }
+    np.savez_compressed(
+        out_npz,
+        theta_vals=theta_vals,
+        slab_vals=slab_vals,
+        intensity_map=intensity_map,
     )
-    
-    elapsed = time.time() - start_time
-    
-    print("\n" + "="*40)
-    print("=== FINAL OPTIMIZATION RESULTS ===")
-    print("="*40)
-    print(result)
-    print("="*40)
-    
-    if result.success:
-        print(f"\nSUCCESS! You have trapped the BIC.")
-        print(f"Optimal Theta: {result.x[0]:.5f} deg")
-        print(f"Optimal H:     {result.x[1]:.5f} nm")
-        print(f"Final Reflection Intensity: {result.fun:.6e}")
-    
-    print(f"\nTotal optimization time: {elapsed / 60:.2f} minutes")
+    print(f"\n[SCOUT] Saved {out_npz}  (shape intensity_map={intensity_map.shape})")
+    print(f"[SCOUT] Runtime: {(time.time()-t0)/60:.1f} min")
 
-# def plot_phase_vortex():
-#     """Generate a highly zoomed-in 2D map of the complex phase and intensity."""
-#     import numpy as np
-#     import matplotlib.pyplot as plt
-#     import time
+    # Log-scale heatmap
+    fig, ax = plt.subplots(figsize=(10, 7))
+    clipped = np.clip(intensity_map, 1e-4, None)
+    mesh = ax.pcolormesh(
+        Theta_grid, Slab_grid, clipped,
+        cmap='inferno', shading='auto',
+        norm=LogNorm(vmin=1e-4, vmax=1.0),
+    )
+    plt.colorbar(mesh, ax=ax, label='|r₀|² (log scale)')
+    ax.set_xlabel('Theta (degrees)')
+    ax.set_ylabel('Slab Thickness (nm)')
+    ax.set_title('Stage 1: 2D Scout — |r₀|² (log scale)')
+    plt.tight_layout()
+    out_png = os.path.join(output_dir, "stage1_scout.png")
+    plt.savefig(out_png, dpi=300)
+    plt.close()
+    print(f"[SCOUT] Saved {out_png}")
 
-#     # Center exactly on the Nelder-Mead optimal coordinate
-#     theta_center = 8.1245
-#     H_center = 451.88
 
-#     # Create a zoomed-in grid (+/- 0.5 degrees and +/- 5 nm)
-#     grid_size = 15
-#     theta_vals = np.linspace(theta_center - 0.5, theta_center + 0.5, grid_size)
-#     H_vals = np.linspace(H_center - 5.0, H_center + 5.0, grid_size)
+# ============================================================
+# STAGE 2 — NELDER-MEAD DESCENT
+# ============================================================
 
-#     Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
-#     Phase_grid = np.zeros_like(Theta_grid)
-#     Intensity_grid = np.zeros_like(Theta_grid)
+def run_descent(
+    seeds=None,
+    seeds_file=None,
+    scout_npz=None,
+    output_dir=RESULTS_DIR,
+    theta_bounds=(0.0, 30.0),
+    slab_bounds=(200.0, 1200.0),
+):
+    """
+    Run Nelder-Mead from each seed and save results to descent_results.json.
 
-#     print(f"Starting 2D phase sweep ({grid_size}x{grid_size} = {grid_size**2} points)...")
-#     print("This will take approximately 75 minutes. Let it run in the background!\n")
+    Seed priority (first one that succeeds):
+      1. `seeds`      — list of dicts passed directly (highest priority)
+      2. `seeds_file` — path to a JSON file with the same format
+      3. `scout_npz`  — auto-detect candidates from a scout_data.npz file
 
-#     start_time = time.time()
-    
-#     for i in range(grid_size):
-#         for j in range(grid_size):
-#             # The physics engine strictly requires radians!
-#             theta_rad = np.radians(theta_vals[j])
-#             H_val = H_vals[i]
+    Each seed dict must have keys: 'theta' (deg), 'slab' (nm).
+    Optional keys: 'r0_sq', 'type'.
+    """
+    import scipy.optimize as opt
 
-#             # Get the raw complex amplitude
-#             r_0 = get_reflection(theta_rad, H_val)
+    os.makedirs(output_dir, exist_ok=True)
+    out_json = os.path.join(output_dir, "descent_results.json")
 
-#             # Store both the phase angle and the intensity
-#             Phase_grid[i, j] = np.angle(r_0)
-#             Intensity_grid[i, j] = np.abs(r_0)**2
+    # ── Load seeds ───────────────────────────────────────────────
+    if seeds is not None:
+        seed_list = seeds
+        print(f"[DESCENT] Using {len(seed_list)} manually provided seeds.")
 
-#         print(f"Row {i+1}/{grid_size} completed...")
+    elif seeds_file is not None and os.path.exists(seeds_file):
+        with open(seeds_file) as f:
+            data = json.load(f)
+        # Accept either a bare list or the JSON with a 'known_candidates' key
+        seed_list = data if isinstance(data, list) else data.get("known_candidates", data)
+        print(f"[DESCENT] Loaded {len(seed_list)} seeds from {seeds_file}.")
 
-#     elapsed = (time.time() - start_time) / 60
-#     print(f"\nSweep finished in {elapsed:.2f} minutes.")
+    elif scout_npz is not None and os.path.exists(scout_npz):
+        seed_list = _auto_seeds_from_scout(scout_npz)
+        print(f"[DESCENT] Auto-detected {len(seed_list)} seeds from {scout_npz}.")
 
-#     # --- PLOT 1: The Topological Phase Vortex ---
-#     plt.figure(figsize=(8, 6))
-#     # 'twilight' is a cyclic colormap perfect for phase wrapping (-pi to pi)
-#     mesh1 = plt.pcolormesh(Theta_grid, H_grid, Phase_grid, cmap='twilight', shading='auto')
-#     plt.colorbar(mesh1, label='Phase Angle (radians)')
-#     plt.xlabel('Theta (degrees)')
-#     plt.ylabel('H (nm)')
-#     plt.title('Topological Phase Vortex around Quasi-BIC')
-#     # Plot a white star at the Nelder-Mead center
-#     plt.plot(theta_center, H_center, 'w*', markersize=12, markeredgecolor='k', label='Optimal Point')
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.show(block=False)
+    else:
+        raise FileNotFoundError(
+            "run_descent: no seeds provided and no valid seeds_file or scout_npz found.\n"
+            "Pass seeds= directly, or point seeds_file= / scout_npz= to existing files."
+        )
 
-#     # --- PLOT 2: The Intensity Dip ---
-#     plt.figure(figsize=(8, 6))
-#     mesh2 = plt.pcolormesh(Theta_grid, H_grid, Intensity_grid, cmap='viridis', shading='auto')
-#     plt.colorbar(mesh2, label='Reflection Intensity |r_0|^2')
-#     plt.xlabel('Theta (degrees)')
-#     plt.ylabel('H (nm)')
-#     plt.title('Reflection Intensity Minimum')
-#     plt.plot(theta_center, H_center, 'r*', markersize=12, markeredgecolor='k', label='Optimal Point')
-#     plt.legend()
-#     plt.tight_layout()
-#     plt.show()
+    if len(seed_list) == 0:
+        print("[DESCENT] No seeds found. Aborting descent.")
+        return
+
+    # ── Bounded objective ────────────────────────────────────────
+    def bounded_obj(x):
+        t, s = x[0], x[1]
+        if not (theta_bounds[0] <= t <= theta_bounds[1] and
+                slab_bounds[0]  <= s <= slab_bounds[1]):
+            return 1.0
+        return objective_function([t, s])
+
+    # ── Run descent from each seed ───────────────────────────────
+    descent_results = []
+
+    for k, seed in enumerate(seed_list):
+        t0 = float(seed['theta'])
+        s0 = float(seed['slab'])
+        v0 = float(seed.get('r0_sq', seed.get('r0', np.nan)))
+        seed_type = seed.get('type', 'unknown')
+
+        print(f"\n{'='*64}")
+        print(f"Descent {k+1}/{len(seed_list)}  [{seed_type}]")
+        print(f"  Seed: theta={t0:.4f} deg,  slab={s0:.2f} nm,  |r₀|²≈{v0:.3e}")
+        print(f"{'='*64}")
+
+        iters = [0]
+
+        def _cb(xk, _iters=iters):
+            _iters[0] += 1
+            v = bounded_obj(xk)
+            print(f"  iter {_iters[0]:4d}: theta={xk[0]:10.6f}  slab={xk[1]:10.4f}  "
+                  f"|r₀|²={v:.6e}  log₁₀={np.log10(v+1e-30):.2f}")
+
+        result = opt.minimize(
+            bounded_obj,
+            [t0, s0],
+            method='Nelder-Mead',
+            callback=_cb,
+            options={'xatol': 1e-6, 'fatol': 1e-12, 'maxiter': 2000, 'disp': False},
+        )
+
+        tf, sf, vf = result.x[0], result.x[1], result.fun
+
+        if vf < 1e-8:
+            status = "STRONG_BIC"
+        elif vf < 1e-3:
+            status = "NEAR_BIC"
+        else:
+            status = "NO_BIC"
+
+        print(f"  → theta={tf:.8f} deg,  slab={sf:.4f} nm,  |r₀|²={vf:.6e}  [{status}]")
+
+        descent_results.append({
+            "seed_theta":       t0,
+            "seed_slab":        s0,
+            "seed_type":        seed_type,
+            "final_theta":      tf,
+            "final_slab":       sf,
+            "r0_squared":       float(vf),
+            "log10_r0_squared": float(np.log10(vf + 1e-30)),
+            "status":           status,
+            "optimizer_msg":    result.message,
+            "n_iter":           iters[0],
+            "fourier_mode":     5,
+        })
+
+    # ── Summary table ────────────────────────────────────────────
+    print(f"\n{'='*64}")
+    print("DESCENT SUMMARY")
+    print(f"{'='*64}")
+    hdr = f"{'#':>3}  {'seed_θ':>8}  {'seed_slab':>10}  {'final_θ':>12}  {'final_slab':>11}  {'|r₀|²':>10}  status"
+    print(hdr)
+    print("-" * len(hdr))
+    for k, dr in enumerate(descent_results):
+        print(f"{k+1:>3}  {dr['seed_theta']:>8.4f}  {dr['seed_slab']:>10.2f}  "
+              f"{dr['final_theta']:>12.6f}  {dr['final_slab']:>11.4f}  "
+              f"{dr['r0_squared']:>10.3e}  {dr['status']}")
+
+    best = min(descent_results, key=lambda x: x['r0_squared'])
+    print(f"\nBest: theta={best['final_theta']:.6f} deg,  "
+          f"slab={best['final_slab']:.4f} nm,  |r₀|²={best['r0_squared']:.4e}")
+
+    # ── Save ─────────────────────────────────────────────────────
+    with open(out_json, 'w') as f:
+        json.dump(descent_results, f, indent=2)
+    print(f"[DESCENT] Saved {out_json}")
+
+    return descent_results
+
+
+def _auto_seeds_from_scout(npz_path, intensity_thresh_dark=0.01,
+                            intensity_thresh_fano=0.3, adjacency=2):
+    """Extract BIC candidate seeds from a saved scout_data.npz."""
+    data         = np.load(npz_path)
+    theta_vals   = data['theta_vals']
+    slab_vals    = data['slab_vals']
+    intensity_map = data['intensity_map']
+
+    seeds = []
+    for i in range(len(slab_vals)):
+        for j in range(len(theta_vals)):
+            if intensity_map[i, j] >= intensity_thresh_dark:
+                continue
+            nearby_fano = any(
+                0 <= j + dj < len(theta_vals) and
+                intensity_map[i, j + dj] > intensity_thresh_fano
+                for dj in range(-adjacency, adjacency + 1) if dj != 0
+            )
+            if nearby_fano:
+                seeds.append({
+                    'theta': float(theta_vals[j]),
+                    'slab':  float(slab_vals[i]),
+                    'r0_sq': float(intensity_map[i, j]),
+                    'type':  'FW_auto',
+                })
+        # Symmetry-protected: near-dark at theta~0
+        if intensity_map[i, 0] < 0.05:
+            seeds.append({
+                'theta': 0.5,
+                'slab':  float(slab_vals[i]),
+                'r0_sq': float(intensity_map[i, 0]),
+                'type':  'symm_protected_auto',
+            })
+    return seeds
+
+
+# ============================================================
+# STAGE 3 — PHASE MAP + WINDING NUMBER
+# ============================================================
 
 def calculate_winding_number(phase_grid):
     """
-    Computes the topological winding number (q) by integrating the phase 
-    differences along a closed square contour around the center singularity.
+    Compute topological winding number by integrating phase differences
+    along a closed square contour around the grid center.
     """
-    import numpy as np
+    c = phase_grid.shape[0] // 2
+    r = 2
 
-    # Find the center index of the grid
-    # (Assuming the grid is square and the singularity is in the dead center)
-    center_idx = phase_grid.shape[0] // 2
-    
-    # Define a small square contour 'radius' around the center (e.g., 2 pixels out)
-    r = 2 
-    
-    # Extract the phase values along the top, right, bottom, and left edges of the square
-    top_edge = phase_grid[center_idx - r, center_idx - r : center_idx + r]
-    right_edge = phase_grid[center_idx - r : center_idx + r, center_idx + r]
-    bottom_edge = phase_grid[center_idx + r, center_idx + r : center_idx - r : -1]
-    left_edge = phase_grid[center_idx + r : center_idx - r : -1, center_idx - r]
-    
-    # Concatenate edges to form one continuous closed loop
-    contour_phases = np.concatenate([top_edge, right_edge, bottom_edge, left_edge])
-    
-    # Calculate the discrete differences between adjacent points
-    phase_diffs = np.diff(contour_phases)
-    
-    # Close the loop by calculating the difference between the last and first point
-    loop_closure = contour_phases[0] - contour_phases[-1]
-    phase_diffs = np.append(phase_diffs, loop_closure)
-    
-    # The critical step: Unwrap the phase differences to handle the branch cut!
-    # This forces all differences to exist strictly between -pi and pi.
-    wrapped_diffs = np.angle(np.exp(1j * phase_diffs))
-    
-    # Compute the winding number (Sum of wrapped differences divided by 2*pi)
-    q = np.sum(wrapped_diffs) / (2 * np.pi)
-    
+    top    = phase_grid[c - r, c - r : c + r]
+    right  = phase_grid[c - r : c + r, c + r]
+    bottom = phase_grid[c + r, c + r : c - r : -1]
+    left   = phase_grid[c + r : c - r : -1, c - r]
+
+    contour       = np.concatenate([top, right, bottom, left])
+    diffs         = np.diff(contour)
+    loop_closure  = contour[0] - contour[-1]
+    diffs         = np.append(diffs, loop_closure)
+    wrapped       = np.angle(np.exp(1j * diffs))
+    q             = np.sum(wrapped) / (2 * pi)
+
     print(f"\n=== TOPOLOGICAL PROOF ===")
-    print(f"Calculated Winding Number (q): {q:.4f}")
-    print(f"Nearest Integer Charge: {int(np.round(q))}")
-    
+    print(f"Winding number q = {q:.4f}  →  nearest integer: {int(np.round(q))}")
     return int(np.round(q))
 
-def plot_phase_vortex(theta_center, H_center):
-    """Generate a highly zoomed-in 2D map of the complex phase and intensity, saving to disk."""
-    import numpy as np
+
+def run_phase_map(
+    theta_center=None,
+    slab_center=None,
+    descent_json=None,
+    output_dir=RESULTS_DIR,
+    grid_size=15,
+    theta_half_width=0.5,
+    slab_half_width=5.0,
+):
+    """
+    Generate phase vortex and intensity crater plots around a BIC candidate.
+
+    Center priority:
+      1. (theta_center, slab_center) passed directly
+      2. Best result from descent_json
+    """
     import matplotlib.pyplot as plt
-    import time
 
-    # Create a zoomed-in grid (+/- 0.5 degrees and +/- 5 nm)
-    grid_size = 15
-    theta_vals = np.linspace(theta_center - 0.5, theta_center + 0.5, grid_size)
-    H_vals = np.linspace(H_center - 5.0, H_center + 5.0, grid_size)
+    os.makedirs(output_dir, exist_ok=True)
 
-    Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
-    Phase_grid = np.zeros_like(Theta_grid)
+    # ── Resolve center ───────────────────────────────────────────
+    if theta_center is None or slab_center is None:
+        if descent_json is None:
+            descent_json = os.path.join(output_dir, "descent_results.json")
+        if not os.path.exists(descent_json):
+            raise FileNotFoundError(
+                f"run_phase_map: no center provided and {descent_json} not found."
+            )
+        with open(descent_json) as f:
+            results = json.load(f)
+        best = min(results, key=lambda x: x['r0_squared'])
+        theta_center = best['final_theta']
+        slab_center  = best['final_slab']
+        print(f"[PHASE MAP] Using best descent result: "
+              f"theta={theta_center:.6f} deg,  slab={slab_center:.4f} nm")
+
+    # ── Grid ─────────────────────────────────────────────────────
+    theta_vals = np.linspace(theta_center - theta_half_width,
+                             theta_center + theta_half_width, grid_size)
+    slab_vals  = np.linspace(slab_center  - slab_half_width,
+                             slab_center  + slab_half_width,  grid_size)
+
+    Theta_grid, Slab_grid = np.meshgrid(theta_vals, slab_vals)
+    Phase_grid     = np.zeros_like(Theta_grid)
     Intensity_grid = np.zeros_like(Theta_grid)
 
-    print(f"Starting 2D phase sweep ({grid_size}x{grid_size} = {grid_size**2} points)...")
-    print("This will take approximately 75 minutes. Saving plots to disk when finished!\n")
+    total = grid_size ** 2
+    print(f"[PHASE MAP] Starting {grid_size}×{grid_size} = {total} point sweep...")
+    t0 = time.time()
 
-    start_time = time.time()
-    
     for i in range(grid_size):
         for j in range(grid_size):
-            # The physics engine strictly requires radians!
-            theta_rad = np.radians(theta_vals[j])
-            H_val = H_vals[i]
+            r_0 = get_reflection(np.radians(theta_vals[j]), slab_vals[i])
+            Phase_grid[i, j]     = np.angle(r_0)
+            Intensity_grid[i, j] = np.abs(r_0) ** 2
+        elapsed = (time.time() - t0) / 60
+        remaining = elapsed / (i + 1) * (grid_size - i - 1)
+        print(f"  Row {i+1}/{grid_size} done  ({elapsed:.1f} min elapsed, "
+              f"~{remaining:.1f} min remaining)")
 
-            # Get the raw complex amplitude
-            r_0 = get_reflection(theta_rad, H_val)
+    print(f"[PHASE MAP] Sweep complete in {(time.time()-t0)/60:.1f} min")
 
-            # Store both the phase angle and the intensity
-            Phase_grid[i, j] = np.angle(r_0)
-            Intensity_grid[i, j] = np.abs(r_0)**2
+    # ── Winding number ───────────────────────────────────────────
+    q = calculate_winding_number(Phase_grid)
 
-        print(f"Row {i+1}/{grid_size} completed...")
-
-    elapsed = (time.time() - start_time) / 60
-    print(f"\nSweep finished in {elapsed:.2f} minutes.")
-
-    # --- NEW: CALCULATE TOPOLOGICAL CHARGE ---
-    calculate_winding_number(Phase_grid)
-
-    # --- PLOT 1: The Topological Phase Vortex ---
-    plt.figure(figsize=(8, 6))
-    mesh1 = plt.pcolormesh(Theta_grid, H_grid, Phase_grid, cmap='twilight', shading='auto')
-    plt.colorbar(mesh1, label='Phase Angle (radians)')
-    plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
-    plt.title('Topological Phase Vortex around True BIC')
-    plt.plot(theta_center, H_center, 'w*', markersize=12, markeredgecolor='k', label='Optimal Point')
-    plt.legend()
+    # ── Plot 1: Phase vortex ─────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 6))
+    mesh = ax.pcolormesh(Theta_grid, Slab_grid, Phase_grid,
+                         cmap='twilight', shading='auto')
+    plt.colorbar(mesh, ax=ax, label='Phase angle (radians)')
+    ax.set_xlabel('Theta (degrees)')
+    ax.set_ylabel('Slab Thickness (nm)')
+    ax.set_title(f'Phase Vortex — True BIC  (q = {q})')
+    ax.plot(theta_center, slab_center, 'w*', markersize=12,
+            markeredgecolor='k', label='BIC center')
+    ax.legend()
     plt.tight_layout()
-    # SAVE TO DISK
-    plt.savefig("phase_vortex_dielectric.png", dpi=300)
-    print("-> Saved: phase_vortex_dielectric.png")
-    plt.close() # Close window to free memory
-
-    # --- PLOT 2: The Intensity Dip ---
-    plt.figure(figsize=(8, 6))
-    mesh2 = plt.pcolormesh(Theta_grid, H_grid, Intensity_grid, cmap='viridis', shading='auto')
-    plt.colorbar(mesh2, label='Reflection Intensity |r_0|^2')
-    plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
-    plt.title('Reflection Intensity Minimum (Dielectric)')
-    plt.plot(theta_center, H_center, 'r*', markersize=12, markeredgecolor='k', label='Optimal Point')
-    plt.legend()
-    plt.tight_layout()
-    # SAVE TO DISK
-    plt.savefig("intensity_crater_dielectric.png", dpi=300)
-    print("-> Saved: intensity_crater_dielectric.png")
-    plt.close() # Close window to free memory
-
-def run_overnight_bic_hunt():
-    import numpy as np
-    import scipy.optimize as opt
-    import matplotlib.pyplot as plt
-    import time
-    
-    print("=== COMMENCING 2D TRUE-BIC PIPELINE ===\n")
-    start_time = time.time()
-
-    # --- STAGE 1: 2D Coarse Grid Scout ---
-    print("Stage 1: Scouting 2D Parameter Space...")
-    theta_vals = np.linspace(0.0, 15.0, 20)
-    H_vals = np.linspace(300.0, 800.0, 20)
-    
-    Theta_grid, H_grid = np.meshgrid(theta_vals, H_vals)
-    Intensity_grid = np.zeros_like(Theta_grid)
-    
-    # Calculate the 20x20 grid
-    for i in range(len(H_vals)):
-        for j in range(len(theta_vals)):
-            Intensity_grid[i, j] = objective_function([theta_vals[j], H_vals[i]])
-            
-    # --- PLOT THE TERRAIN ---
-    plt.figure(figsize=(8, 6))
-    plt.pcolormesh(Theta_grid, H_grid, Intensity_grid, cmap='viridis', shading='auto')
-    plt.colorbar(label='Reflection Intensity |r_0|^2')
-    plt.title('Stage 1: 2D Coarse Scout (Dielectric)')
-    plt.xlabel('Theta (degrees)')
-    plt.ylabel('H (nm)')
-    plt.savefig("stage1_2D_scout.png", dpi=300)
+    out1 = os.path.join(output_dir, "phase_vortex_dielectric.png")
+    plt.savefig(out1, dpi=300)
     plt.close()
-    print("-> Saved: stage1_2D_scout.png")
+    print(f"[PHASE MAP] Saved {out1}")
 
-# --- STAGE 2: Locate the Fano Resonance (Max Gradient) ---
-    print("\nStage 2: Calculating 2D Gradient to locate the Fano ridge...")
-    
-    dI_dH, dI_dTheta = np.gradient(Intensity_grid, H_vals, theta_vals)
-    gradient_magnitude = np.sqrt(dI_dH**2 + dI_dTheta**2)
-    
-    intensity_threshold = np.percentile(Intensity_grid, 90)
-    valid_region_mask = Intensity_grid >= intensity_threshold
-    
-    masked_gradient = np.zeros_like(gradient_magnitude)
-    masked_gradient[valid_region_mask] = gradient_magnitude[valid_region_mask]
-    
-    max_grad_idx = np.unravel_index(np.argmax(masked_gradient), masked_gradient.shape)
-    
-    ridge_theta = theta_vals[max_grad_idx[1]]
-    ridge_H = H_vals[max_grad_idx[0]]
-    
-    # --- TRUE STEEPEST DESCENT STEP ---
-    dtheta = float(theta_vals[1] - theta_vals[0])
-    dH = float(H_vals[1] - H_vals[0])
+    # ── Plot 2: Intensity crater ─────────────────────────────────
+    fig, ax = plt.subplots(figsize=(8, 6))
+    mesh = ax.pcolormesh(Theta_grid, Slab_grid, Intensity_grid,
+                         cmap='viridis', shading='auto')
+    plt.colorbar(mesh, ax=ax, label='|r₀|²')
+    ax.set_xlabel('Theta (degrees)')
+    ax.set_ylabel('Slab Thickness (nm)')
+    ax.set_title('Intensity Crater around True BIC')
+    ax.plot(theta_center, slab_center, 'r*', markersize=12,
+            markeredgecolor='k', label='BIC center')
+    ax.legend()
+    plt.tight_layout()
+    out2 = os.path.join(output_dir, "intensity_crater_dielectric.png")
+    plt.savefig(out2, dpi=300)
+    plt.close()
+    print(f"[PHASE MAP] Saved {out2}")
 
-    grad_theta = float(dI_dTheta[max_grad_idx])
-    grad_H = float(dI_dH[max_grad_idx])
+    return q
 
-    scaled_grad_theta = grad_theta * dtheta
-    scaled_grad_H = grad_H * dH
-    scaled_grad_norm = np.hypot(scaled_grad_theta, scaled_grad_H)
 
-    if scaled_grad_norm == 0.0:
-        start_theta = float(ridge_theta)
-        start_H = float(ridge_H)
-    else:
-        delta_theta = -0.5 * dtheta * (scaled_grad_theta / scaled_grad_norm)
-        delta_H = -0.5 * dH * (scaled_grad_H / scaled_grad_norm)
+# ============================================================
+# STAGE 4 — FOURIER MODE CONVERGENCE CHECK
+# ============================================================
 
-        start_theta = float(np.clip(ridge_theta + delta_theta, theta_vals[0], theta_vals[-1]))
-        start_H = float(np.clip(ridge_H + delta_H, H_vals[0], H_vals[-1]))
+def run_convergence(
+    theta_center=None,
+    slab_center=None,
+    descent_json=None,
+    output_dir=RESULTS_DIR,
+    modes=(5, 10, 15),
+):
+    """
+    Evaluate |r₀|² at increasing Fourier mode counts at the best BIC candidate.
 
-    x0 = [start_theta, start_H]
-    
-    print(f"-> Max gradient found on resonance peak at Theta = {ridge_theta:.4f}, H = {ridge_H:.4f}")
-    print(f"-> Seeding Nelder-Mead downhill at x0 = {x0}...")
+    A genuine BIC should be stable under increasing M.
+    A numerical artifact will shift or disappear.
 
-    # --- STAGE 3: Nelder-Mead Optimization ---
-    result = opt.minimize(
-        objective_function, 
-        x0, 
-        method='Nelder-Mead', 
-        options={'xatol': 1e-5, 'fatol': 1e-8, 'disp': True}
-    )
-    
-    if result.success:
-        print("\n=== SUCCESS! TRUE BIC TRAPPED ===")
-        print(f"Optimal Theta: {result.x[0]:.6f} deg")
-        print(f"Optimal H:     {result.x[1]:.6f} nm")
-        print(f"Final Reflection Intensity: {result.fun:.6e}")
-        
-        # --- NEW CODE: SAVE NUMERICAL RESULTS TO DISK ---
-        with open("bic_optimization_results.txt", "w") as f:
-            f.write("=== TRUE BIC OPTIMIZATION RESULTS ===\n")
-            f.write(f"Optimal Theta: {result.x[0]:.8f} deg\n")
-            f.write(f"Optimal H:     {result.x[1]:.8f} nm\n")
-            f.write(f"Final Reflection Intensity: {result.fun:.8e}\n")
-            f.write("\nFull SciPy Result Object:\n")
-            f.write(str(result))
-        print("-> Saved numerical results to bic_optimization_results.txt\n")
-        # ------------------------------------------------
-        
-        print("Stage 4: Generating Phase and Intensity Maps...")
-        plot_phase_vortex(result.x[0], result.x[1])
-    else:
-        print("\nOptimization failed to converge.")
+    Center priority: same as run_phase_map.
+    """
+    os.makedirs(output_dir, exist_ok=True)
 
-    elapsed = (time.time() - start_time) / 3600
-    print(f"\n=== PIPELINE COMPLETE. Total runtime: {elapsed:.2f} hours ===")
+    # ── Resolve center ───────────────────────────────────────────
+    if theta_center is None or slab_center is None:
+        if descent_json is None:
+            descent_json = os.path.join(output_dir, "descent_results.json")
+        if not os.path.exists(descent_json):
+            raise FileNotFoundError(
+                f"run_convergence: no center provided and {descent_json} not found."
+            )
+        with open(descent_json) as f:
+            results = json.load(f)
+        best = min(results, key=lambda x: x['r0_squared'])
+        theta_center = best['final_theta']
+        slab_center  = best['final_slab']
 
+    print(f"\n[CONVERGENCE] Checking at theta={theta_center:.6f} deg, slab={slab_center:.4f} nm")
+    print(f"{'Mode (±N)':>10}  {'Total modes':>12}  {'|r₀|²':>14}  {'log₁₀|r₀|²':>14}")
+    print("-" * 56)
+
+    rows = []
+    for M in modes:
+        r0  = get_reflection(np.radians(theta_center), slab_center, fourierMode=M)
+        val = float(np.abs(r0) ** 2)
+        rows.append({'M': M, 'total_modes': 2*M+1, 'r0_squared': val})
+        print(f"{M:>10}  {2*M+1:>12}  {val:>14.6e}  {np.log10(val+1e-30):>14.4f}")
+
+    # Assess stability
+    vals = [r['r0_squared'] for r in rows]
+    if len(vals) >= 2:
+        relative_change = abs(vals[-1] - vals[0]) / (vals[0] + 1e-30)
+        if relative_change < 0.5:
+            verdict = "STABLE — consistent with a genuine BIC"
+        else:
+            verdict = f"UNSTABLE (relative change = {relative_change:.1%}) — may be numerical artifact"
+        print(f"\n[CONVERGENCE] Verdict: {verdict}")
+
+    # Save
+    out_json = os.path.join(output_dir, "convergence_results.json")
+    with open(out_json, 'w') as f:
+        json.dump({
+            'theta_deg': theta_center,
+            'slab_nm':   slab_center,
+            'rows':      rows,
+        }, f, indent=2)
+    print(f"[CONVERGENCE] Saved {out_json}")
+
+    return rows
+
+
+# ============================================================
+# MANUAL SEEDS FILE  (written once, read by run_descent)
+# ============================================================
+
+def write_manual_seeds(path=MANUAL_SEEDS_FILE):
+    """
+    Write the known BIC candidate seeds from the console log to disk.
+    Call this once; afterwards run_descent will read it automatically.
+    """
+    seeds = [
+        {"theta": 13.45,   "slab": 783.0,   "r0_sq": 3.2e-4, "type": "FW_candidate"},
+        {"theta": 0.5,     "slab": 992.0,   "r0_sq": 3.7e-4, "type": "symm_protected_candidate"},
+        {"theta": 10.3448, "slab": 408.33,  "r0_sq": 9.91e-3, "type": "FW_tight"},
+        {"theta": 0.5,     "slab": 783.33,  "r0_sq": 7.91e-3, "type": "symm_protected"},
+        {"theta": 8.2759,  "slab": 700.00,  "r0_sq": 1.53e-2, "type": "FW"},
+        {"theta": 18.6207, "slab": 1158.33, "r0_sq": 1.45e-2, "type": "FW"},
+        {"theta": 3.1034,  "slab": 866.67,  "r0_sq": 4.01e-2, "type": "FW"},
+        {"theta": 12.4138, "slab": 908.33,  "r0_sq": 7.52e-2, "type": "FW"},
+    ]
+    with open(path, 'w') as f:
+        json.dump(seeds, f, indent=2)
+    print(f"[SEEDS] Wrote {len(seeds)} seeds to {path}")
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
-    #run_two_stage_sweeps()
-    #run_optimization()
-    #plot_phase_vortex()
-    run_overnight_bic_hunt()   #This is the correct function to run the entire 2D pipeline from scratch, but it will take many hours to complete.
-    
-    # Run ONLY the phase map around the known absolute zero
-    optimal_theta = 1.51490625
-    optimal_H = 267.00795001
-    
-    print("Running targeted phase map to calculate winding number...")
-    plot_phase_vortex(optimal_theta, optimal_H)
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    # ── Stage 1: Scout ───────────────────────────────────────────
+    if RUN_SCOUT:
+        run_scout(
+            theta_range=(0.0, 30.0), n_theta=30,
+            slab_range=(200.0, 1200.0), n_slab=25,
+        )
+
+    # ── Stage 2: Descent ─────────────────────────────────────────
+    if RUN_DESCENT:
+        # Write seeds file if it doesn't exist yet
+        if not os.path.exists(MANUAL_SEEDS_FILE):
+            write_manual_seeds(MANUAL_SEEDS_FILE)
+
+        scout_npz = os.path.join(RESULTS_DIR, "scout_data.npz")
+
+        descent_results = run_descent(
+            seeds_file=MANUAL_SEEDS_FILE,           # use manual seeds (already have them)
+            scout_npz=scout_npz if os.path.exists(scout_npz) else None,  # fallback
+        )
+
+    # ── Stage 3: Phase map ───────────────────────────────────────
+    if RUN_PHASE_MAP:
+        # Reads best result from descent_results.json automatically.
+        # Override by passing theta_center=..., slab_center=... explicitly.
+        run_phase_map()
+
+    # ── Stage 4: Convergence ─────────────────────────────────────
+    if RUN_CONVERGENCE:
+        run_convergence(modes=(5, 10, 15))

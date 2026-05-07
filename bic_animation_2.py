@@ -108,7 +108,8 @@ eta0 = np.sqrt(mu0 / epsilon0)
 lambda0 = 600
 k0 = 2 * pi / lambda0
 
-H = 267.00795001
+H_fixed = 700.0          # air buffer thickness (nm) — fixed, physically inert
+slab_thickness = 783.9477  # dielectric slab thickness (nm) — BIC-relevant
 fourierMode = 5
 m_fourier = 2 * fourierMode + 1
 numLayers = 2
@@ -117,18 +118,32 @@ yDiscreteSize = np.ones(numLayers)
 xDiscreteSize = 1
 sampleP = 500
 
-layerThick = np.array([H, 700], dtype=float)
-total_height = H + 700
+layerThick = np.array([H_fixed, slab_thickness], dtype=float)
+total_height = H_fixed + slab_thickness
 
 ep = np.empty(numLayers, dtype=object)
-ep[0] = 1 + 1j * 1e-9
-ep[1] = 12.0 + 0j
+ep[0] = 1 + 1j * 1e-9   # air layer (lower, [0, H_fixed])
+ep[1] = 12.0 + 0j        # dielectric slab (upper, [H_fixed, H_fixed+slab_thickness])
 
-g = lambda x, gP: 50 * np.exp(-(x / 50)**2)
+g = lambda x, gP: 100 * np.exp(-(x / 50)**2)
 gPrime = lambda x, gP: -2 * x / 50**2 * g(x, gP)
 
-S_func = lambda y: 0.5 * (1 + np.cos(pi / H * (y - H)))
-SPrime = lambda y: -(pi / (2*H)) * np.sin(pi / H * (y - H))
+# Piecewise asymmetric C-method coordinate transform (Bug 1 fix — do not revert)
+H1 = H_fixed
+H2 = slab_thickness
+
+def S_func(y):
+    return (np.where(y <= H1,
+                     0.5 * (1 - np.cos(pi * y / H1)),
+                     0.5 * (1 + np.cos(pi * (y - H1) / H2)))
+            * ((y >= 0) & (y <= H1 + H2)))
+
+def SPrime(y):
+    return (np.where(y <= H1,
+                     (pi / (2 * H1)) * np.sin(pi * y / H1),
+                     -(pi / (2 * H2)) * np.sin(pi * (y - H1) / H2))
+            * ((y >= 0) & (y <= H1 + H2)))
+
 detDG = lambda x, y: SPrime(y) * g(x, gratingPeriod) + 1
 
 a11 = lambda x, y: np.abs(detDG(x, y))
@@ -175,14 +190,14 @@ def solve_complex_field(theta_rad):
         check = (yGrid[i] - yBound > 0)
         layer = np.where(check)[0][-1]
 
-        ep11 = lambda x: ep[layer] * a11(x, yGrid[i])
-        ep21 = lambda x: ep[layer] * a21(x, yGrid[i])
-        ep22_f = lambda x: ep[layer] * a22(x, yGrid[i])
-        ep33 = lambda x: ep[layer] * a11(x, yGrid[i])
-        mu11 = lambda x: a11(x, yGrid[i])
-        mu21 = lambda x: a21(x, yGrid[i])
-        mu22_f = lambda x: a22(x, yGrid[i])
-        mu33 = lambda x: a11(x, yGrid[i])
+        ep11 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
+        ep21 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a21(x, yi)
+        ep22_f = lambda x, l=layer, yi=yGrid[i]: ep[l] * a22(x, yi)
+        ep33 = lambda x, l=layer, yi=yGrid[i]: ep[l] * a11(x, yi)
+        mu11 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
+        mu21 = lambda x, l=layer, yi=yGrid[i]: a21(x, yi)
+        mu22_f = lambda x, l=layer, yi=yGrid[i]: a22(x, yi)
+        mu33 = lambda x, l=layer, yi=yGrid[i]: a11(x, yi)
 
         Tep11 = ToeplitzM(m_fourier, ep11, gratingPeriod, sampleP)
         Tep21 = ToeplitzM(m_fourier, ep21, gratingPeriod, sampleP)
@@ -303,8 +318,8 @@ def solve_complex_field(theta_rad):
 # COMPUTE FIELDS FOR TWO CASES
 # =====================================================================
 
-theta_BIC = 1.51490625
-theta_OFF = 8.57  # well away from BIC — strong reflection
+theta_BIC = 13.42159675   # STRONG_BIC: |r₀|² = 1.495935e-14
+theta_OFF = 8.57          # well away from BIC — strong reflection
 
 print("=" * 60)
 print("COMPUTING FIELDS FOR TIME-DEPENDENT ANIMATION")
@@ -321,13 +336,12 @@ Hy_bic, r0_bic, yGrid, xGrid = solve_complex_field(np.radians(theta_BIC))
 print(f"   |r0|^2 = {np.abs(r0_bic)**2:.4e}  ({time.time()-t0:.1f}s)")
 
 # =====================================================================
-# ANIMATE: Re[H(r) * exp(-i*omega*t)]
+# PRECOMPUTE TIME FRAMES (full domain — air + slab)
 # =====================================================================
 
-n_time_frames = 48  # frames per period (smooth animation)
+n_time_frames = 48
 omega_t_values = np.linspace(0, 2*pi, n_time_frames, endpoint=False)
 
-# Precompute all frames
 print(f"\nPrecomputing {n_time_frames} time frames...")
 frames_off = []
 frames_bic = []
@@ -336,122 +350,200 @@ for wt in omega_t_values:
     frames_off.append(np.real(Hy_off * phase))
     frames_bic.append(np.real(Hy_bic * phase))
 
-# Find global color limits for consistent scale
-all_vals = np.array(frames_off + frames_bic)
-vmax = np.percentile(np.abs(all_vals), 97)
-vmin = -vmax
-
-print(f"Color scale: [{vmin:.2f}, {vmax:.2f}]")
-
-# =====================================================================
-# CROP TO AIR REGION & SET AIR-SPECIFIC COLOR SCALE
-# =====================================================================
-
 yGrid_arr = np.array(yGrid)
-air_mask = yGrid_arr < H
-
-air_frames_off = [f[air_mask, :] for f in frames_off]
-air_frames_bic = [f[air_mask, :] for f in frames_bic]
+air_mask = yGrid_arr < H_fixed
 yGrid_air = yGrid_arr[air_mask]
 
-vmax_air = np.percentile(np.abs(np.array(air_frames_off)), 99)
-vmin_air = -vmax_air
-print(f"Air-region color scale: [{vmin_air:.2f}, {vmax_air:.2f}]")
-
 # =====================================================================
-# CREATE FIGURE
+# FIGURE 1: STANDING WAVE CONTRAST + FIELD INTENSITY MAPS (static)
 # =====================================================================
 
+# Panel A data: |H_y(x≈0, y)| in air — standing wave vs traveling wave
+x_idx_zero = np.argmin(np.abs(xGrid))
+Hy_off_profile = np.abs(Hy_off[air_mask, x_idx_zero])
+Hy_bic_profile = np.abs(Hy_bic[air_mask, x_idx_zero])
+
+# Panel B & C data: |H_y(x,y)|² over full domain, shared color scale
+Hy_off_intens = np.abs(Hy_off)**2
+Hy_bic_intens = np.abs(Hy_bic)**2
+vmax_intens = np.percentile(
+    np.concatenate([Hy_off_intens.ravel(), Hy_bic_intens.ravel()]), 98
+)
+print(f"Intensity color scale: [0, {vmax_intens:.3f}]")
+
+fig_static, (ax_sw, ax_off_map, ax_bic_map) = plt.subplots(1, 3, figsize=(20, 7))
+fig_static.suptitle(
+    r'BIC Field Analysis — Standing Wave Contrast & Field Intensity',
+    fontsize=15, fontweight='bold'
+)
+
+# --- Panel A: Standing wave contrast ---
+ax_sw.plot(Hy_off_profile, yGrid_air, color='darkred', linewidth=1.5,
+           label=fr'OFF-BIC ($\theta={theta_OFF}°$)')
+ax_sw.plot(Hy_bic_profile, yGrid_air, color='limegreen', linewidth=1.5,
+           label=fr'BIC ($\theta={theta_BIC:.4f}°$)')
+ax_sw.axhline(y=H_fixed, color='black', linewidth=2, linestyle='--', alpha=0.6)
+ax_sw.set_xlabel(r'$|H_y(x{\approx}0,\,y)|$ (arb.)', fontsize=12)
+ax_sw.set_ylabel(r'$y$ (nm)', fontsize=12)
+ax_sw.set_title('(A) Standing Wave Contrast\n'
+                r'Air region: sinusoidal (OFF-BIC) vs flat (BIC)', fontsize=12)
+ax_sw.legend(fontsize=10, loc='lower right')
+ax_sw.set_ylim([0, H_fixed])
+ax_sw.grid(True, alpha=0.3)
+max_profile = max(Hy_off_profile.max(), Hy_bic_profile.max())
+ax_sw.text(max_profile * 0.05, H_fixed * 0.97,
+           '─── air/grating interface', fontsize=8,
+           va='top', color='black', style='italic')
+
+# --- Panel B: OFF-BIC |H_y|² ---
+im_off = ax_off_map.pcolormesh(xGrid, yGrid_arr, Hy_off_intens,
+                                cmap='inferno', shading='auto',
+                                vmin=0, vmax=vmax_intens)
+ax_off_map.axhline(y=H_fixed, color='white', linewidth=2, linestyle='--', alpha=0.8)
+ax_off_map.set_xlim([-gratingPeriod/2, gratingPeriod/2])
+ax_off_map.set_ylim([0, total_height])
+ax_off_map.set_xlabel(r'$x$ (nm)', fontsize=12)
+ax_off_map.set_ylabel(r'$y$ (nm)', fontsize=12)
+ax_off_map.set_title(
+    fr'(B) OFF-BIC: $\theta={theta_OFF}°$, $|r_0|^2={np.abs(r0_off)**2:.3f}$'
+    r'$\quad|H_y|^2$',
+    fontsize=12, color='darkred'
+)
+ax_off_map.text(0, H_fixed * 0.10, 'AIR', fontsize=11, color='white',
+               ha='center', fontweight='bold', alpha=0.9)
+ax_off_map.text(0, H_fixed + slab_thickness * 0.5, 'DIELECTRIC',
+               fontsize=11, color='white', ha='center', fontweight='bold', alpha=0.9)
+
+# --- Panel C: BIC |H_y|² ---
+im_bic = ax_bic_map.pcolormesh(xGrid, yGrid_arr, Hy_bic_intens,
+                                cmap='inferno', shading='auto',
+                                vmin=0, vmax=vmax_intens)
+ax_bic_map.axhline(y=H_fixed, color='white', linewidth=2, linestyle='--', alpha=0.8)
+ax_bic_map.set_xlim([-gratingPeriod/2, gratingPeriod/2])
+ax_bic_map.set_ylim([0, total_height])
+ax_bic_map.set_xlabel(r'$x$ (nm)', fontsize=12)
+ax_bic_map.set_ylabel(r'$y$ (nm)', fontsize=12)
+ax_bic_map.set_title(
+    fr'(C) BIC: $\theta={theta_BIC:.4f}°$, $|r_0|^2={np.abs(r0_bic)**2:.2e}$'
+    r'$\quad|H_y|^2$',
+    fontsize=12, color='darkgreen'
+)
+ax_bic_map.text(0, H_fixed * 0.10, 'AIR', fontsize=11, color='white',
+               ha='center', fontweight='bold', alpha=0.9)
+ax_bic_map.text(0, H_fixed + slab_thickness * 0.5, 'TRAPPED\nMODE',
+               fontsize=11, color='white', ha='center', fontweight='bold', alpha=0.9)
+
+cbar_intens = fig_static.colorbar(im_bic, ax=[ax_off_map, ax_bic_map],
+                                   fraction=0.03, pad=0.04)
+# Make ticks/readability consistent
+cbar_intens.set_label(r'$|H_y|^2$ (arb. units)', fontsize=11)
+cbar_intens.ax.tick_params(labelsize=10)
+cbar_intens.ax.yaxis.set_major_locator(plt.MaxNLocator(nbins=6))
+
+plt.tight_layout()
+fig_static.savefig('BIC_field_analysis_static.png', dpi=150, bbox_inches='tight')
+print("Saved: BIC_field_analysis_static.png")
+
+# =====================================================================
+# FIGURE 2: ANIMATION — Re[Hy·e^{-iωt}], FULL DOMAIN (air + slab)
+# =====================================================================
+
+all_vals_full = np.array(frames_off + frames_bic)
+vmax_anim = np.percentile(np.abs(all_vals_full), 95)
+vmin_anim = -vmax_anim
+print(f"Animation color scale: [{vmin_anim:.2f}, {vmax_anim:.2f}]")
 print("Rendering animation...")
 
-fig, (ax_off, ax_bic) = plt.subplots(1, 2, figsize=(16, 6))
-cmap = 'RdBu_r'
-
-# --- Left panel: OFF-BIC (air only) ---
-cm_off = ax_off.pcolormesh(xGrid, yGrid_air, air_frames_off[0],
+fig_anim, (ax_off, ax_bic) = plt.subplots(1, 2, figsize=(16, 8))
+#cmap = 'RdBu_r'
+cmap = 'inferno'
+# --- Left: OFF-BIC, full domain ---
+cm_off = ax_off.pcolormesh(xGrid, yGrid_arr, frames_off[0],
                             cmap=cmap, shading='auto',
-                            vmin=vmin_air, vmax=vmax_air)
+                            vmin=vmin_anim, vmax=vmax_anim)
+ax_off.axhline(y=H_fixed, color='black', linewidth=2, linestyle='--', alpha=0.8)
 ax_off.set_xlim([-gratingPeriod/2, gratingPeriod/2])
-ax_off.set_ylim([0, H])
+ax_off.set_ylim([0, total_height])
 ax_off.set_xlabel(r'$\hat{x}$ (nm)', fontsize=14)
 ax_off.set_ylabel(r'$\hat{y}$ (nm)', fontsize=14)
-ax_off.set_title(f'OFF-BIC: $\\theta = {theta_OFF}°$\n'
-                 f'$|r_0|^2 = {np.abs(r0_off)**2:.3f}$',
-                 fontsize=15, fontweight='bold', color='darkred')
+ax_off.set_title(
+    fr'OFF-BIC: $\theta = {theta_OFF}°$'
+    '\n'
+    fr'$|r_0|^2 = {np.abs(r0_off)**2:.3f}$',
+    fontsize=14, fontweight='bold', color='darkred'
+)
+ax_off.text(-230, H_fixed * 0.12, 'AIR', fontsize=14, color='black',
+            fontweight='bold', alpha=0.6,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
+ax_off.text(-230, H_fixed + slab_thickness * 0.5, 'DIELECTRIC', fontsize=12,
+            color='black', fontweight='bold', alpha=0.6,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
+ax_off.annotate('', xy=(-180, 40), xytext=(-180, H_fixed - 60),
+                arrowprops=dict(arrowstyle='->', color='red', lw=3, mutation_scale=20))
+ax_off.text(-165, H_fixed * 0.4, 'REFLECTED\nWAVE', fontsize=10,
+            color='red', fontweight='bold', alpha=0.9)
 
-# Grating at top edge
-ax_off.axhline(y=H-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
-ax_off.text(0, H - 15, 'GRATING', fontsize=11, color='black',
-            fontweight='bold', ha='center', va='top',
-            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-
-ax_off.annotate('', xy=(-200, 30), xytext=(-200, H - 40),
-                arrowprops=dict(arrowstyle='->', color='red',
-                               lw=3, mutation_scale=20))
-ax_off.text(-185, H*0.45, 'REFLECTED\nWAVE', fontsize=11, color='red',
-            fontweight='bold', alpha=0.9)
-
-# --- Right panel: BIC (air only) ---
-cm_bic = ax_bic.pcolormesh(xGrid, yGrid_air, air_frames_bic[0],
+# --- Right: BIC, full domain ---
+cm_bic = ax_bic.pcolormesh(xGrid, yGrid_arr, frames_bic[0],
                             cmap=cmap, shading='auto',
-                            vmin=vmin_air, vmax=vmax_air)
+                            vmin=vmin_anim, vmax=vmax_anim)
+ax_bic.axhline(y=H_fixed, color='black', linewidth=2, linestyle='--', alpha=0.8)
 ax_bic.set_xlim([-gratingPeriod/2, gratingPeriod/2])
-ax_bic.set_ylim([0, H])
+ax_bic.set_ylim([0, total_height])
 ax_bic.set_xlabel(r'$\hat{x}$ (nm)', fontsize=14)
 ax_bic.set_ylabel(r'$\hat{y}$ (nm)', fontsize=14)
-ax_bic.set_title(f'BIC: $\\theta = {theta_BIC}°$\n'
-                 f'$|r_0|^2 = {np.abs(r0_bic)**2:.2e}$',
-                 fontsize=15, fontweight='bold', color='darkgreen')
-
-ax_bic.axhline(y=H-1, color='black', linewidth=3, linestyle='-', alpha=0.8)
-ax_bic.text(0, H - 15, 'GRATING', fontsize=11, color='black',
-            fontweight='bold', ha='center', va='top',
-            bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.7))
-
-ax_bic.text(0, H*0.45, 'NO\nREFLECTION!', fontsize=14,
-            color='green', fontweight='bold', alpha=0.9, ha='center',
+ax_bic.set_title(
+    fr'BIC: $\theta = {theta_BIC:.4f}°$'
+    '\n'
+    fr'$|r_0|^2 = {np.abs(r0_bic)**2:.2e}$',
+    fontsize=14, fontweight='bold', color='darkgreen'
+)
+ax_bic.text(-230, H_fixed * 0.12, 'AIR', fontsize=14, color='black',
+            fontweight='bold', alpha=0.6,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
+ax_bic.text(-230, H_fixed + slab_thickness * 0.5, 'TRAPPED\nMODE', fontsize=12,
+            color='darkgreen', fontweight='bold', alpha=0.9,
             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
-# Shared colorbar
-cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-cbar = fig.colorbar(cm_bic, cax=cbar_ax)
-cbar.set_label(r'Re[$H_y \cdot e^{-i\omega t}$]', fontsize=13)
+ # Place colorbar and format ticks/label for better layout
+ # Keep it slightly inset from right to avoid overlapping with subplots
+cbar_ax = fig_anim.add_axes([0.915, 0.15, 0.02, 0.7])
+cbar_anim = fig_anim.colorbar(cm_bic, cax=cbar_ax, format='%.2f')
+cbar_anim.set_label(r'Re[$H_y \cdot e^{-i\omega t}$]', fontsize=13)
+cbar_anim.ax.tick_params(labelsize=11)
+# Ensure the meshes use the same limits as the colorbar
+cm_off.set_clim(vmin_anim, vmax_anim)
+cm_bic.set_clim(vmin_anim, vmax_anim)
 
-# Time indicator
-time_text = fig.text(0.45, 0.02,
-                     r'$\omega t = 0$',
-                     fontsize=16, ha='center', fontweight='bold',
-                     bbox=dict(boxstyle='round', facecolor='lightyellow',
-                               alpha=0.9))
+time_text = fig_anim.text(0.45, 0.02, r'$\omega t = 0$',
+                        fontsize=16, ha='center', fontweight='bold',
+                        bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9))
 
-plt.subplots_adjust(left=0.06, right=0.90, top=0.85, bottom=0.10,
-                    wspace=0.15)
+plt.subplots_adjust(left=0.06, right=0.90, top=0.88, bottom=0.08, wspace=0.15)
 
 
 def update(frame):
-    cm_off.set_array(air_frames_off[frame].ravel())
-    cm_bic.set_array(air_frames_bic[frame].ravel())
-
+    cm_off.set_array(frames_off[frame].ravel())
+    cm_bic.set_array(frames_bic[frame].ravel())
     wt = omega_t_values[frame]
     time_text.set_text(f'$\\omega t = {wt:.2f}$ rad '
                        f'({wt/(2*pi)*100:.0f}% of period)')
     return cm_off, cm_bic, time_text
 
 
-anim = FuncAnimation(fig, update, frames=n_time_frames,
+anim = FuncAnimation(fig_anim, update, frames=n_time_frames,
                      interval=80, blit=False, repeat=True)
 
-# Save GIF
 print("Saving GIF...")
 writer = PillowWriter(fps=12)
-anim.save('BIC_wave_propagation_air.gif', writer=writer, dpi=120)
-print("Saved: BIC_wave_propagation_air.gif")
+anim.save('BIC_wave_propagation_full.gif', writer=writer, dpi=120)
+print("Saved: BIC_wave_propagation_full.gif")
 
 try:
     from matplotlib.animation import FFMpegWriter
     writer_mp4 = FFMpegWriter(fps=15, bitrate=3000)
-    anim.save('BIC_wave_propagation_air.mp4', writer=writer_mp4, dpi=150)
-    print("Saved: BIC_wave_propagation_air.mp4")
+    anim.save('BIC_wave_propagation_full.mp4', writer=writer_mp4, dpi=150)
+    print("Saved: BIC_wave_propagation_full.mp4")
 except Exception as e:
     print(f"MP4 skipped: {e}")
 

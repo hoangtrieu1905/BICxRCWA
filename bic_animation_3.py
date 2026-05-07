@@ -101,7 +101,7 @@ eta0 = np.sqrt(mu0 / epsilon0)
 lambda0 = 600
 k0 = 2 * pi / lambda0
 
-H = 267.00795001
+H = 1104.372816
 fourierMode = 5
 m_fourier = 2 * fourierMode + 1
 numLayers = 2
@@ -264,9 +264,9 @@ def solve_complex_field(theta_rad, H_optimized):
 # COMPUTE FIELDS — same theta, two different H values
 # =====================================================================
 
-theta_BIC = 1.51490625          # angle of the BIC resonance
-H_BIC = 267.00795001            # optimized grating height — achieves BIC
-H_off = 450                     # wrong height — breaks BIC condition
+theta_BIC = 16.024928          # angle of the BIC resonance
+H_BIC = 1104.372816           # optimized grating height — achieves BIC
+H_off = 700                     # wrong height — breaks BIC condition
 
 print("=" * 60)
 print("H SENSITIVITY: same theta, two different grating heights")
@@ -369,10 +369,13 @@ ax_bic.text(-220, H_BIC * 0.3, 'NO\nREFLECTION!', fontsize=12,
             color='green', fontweight='bold', alpha=0.8,
             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
 
-# Shared colorbar
-cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-cbar = fig.colorbar(cm_bic, cax=cbar_ax)
+# Shared colorbar: place slightly inset and format ticks/label
+cm_off.set_clim(vmin, vmax)
+cm_bic.set_clim(vmin, vmax)
+cbar_ax = fig.add_axes([0.915, 0.15, 0.02, 0.7])
+cbar = fig.colorbar(cm_bic, cax=cbar_ax, format='%.2f')
 cbar.set_label(r'Re[$H_y(\mathbf{r}) \cdot e^{-i\omega t}$]', fontsize=13)
+cbar.ax.tick_params(labelsize=11)
 
 # Time indicator
 time_text = fig.text(0.45, 0.02,

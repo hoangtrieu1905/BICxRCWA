@@ -1,0 +1,28 @@
+[
+  {
+    "seed_theta": 13.45,
+    "seed_slab": 783.0,
+    "seed_type": "FW_candidate",
+    "final_theta": 13.421596745058313,
+    "final_slab": 783.9476528552684,
+    "r0_squared": 1.4959354208518072e-14,
+    "log10_r0_squared": -13.825087154448212,
+    "status": "STRONG_BIC",
+    "optimizer_msg": "Optimization terminated successfully.",
+    "n_iter": 52,
+    "fourier_mode": 5
+  },
+  {
+    "seed_theta": 0.5,
+    "seed_slab": 992.0,
+    "seed_type": "symmetry_protected_candidate",
+    "final_theta": 0.014660664821281581,
+    "final_slab": 991.7520409058866,
+    "r0_squared": 0.008690600150087165,
+    "log10_r0_squared": -2.0609502312761507,
+    "status": "NO_BIC",
+    "optimizer_msg": "Optimization terminated successfully.",
+    "n_iter": 126,
+    "fourier_mode": 5
+  }
+]
