@@ -1,7 +1,53 @@
 {
-  "note": "Manually recovered from console log output. Full scout_data.npz will be written on next run of run_overnight_bic_hunt().",
+  "note": "Split by 2-4-2. Manually recovered from console log output. Full scout_data.npz will be written on next run of run_overnight_bic_hunt().",
   "known_candidates": [
-    {"theta": 13.45, "slab": 783.0, "r0_sq": 3.2e-4, "type": "FW_candidate"},
-    {"theta": 0.5,   "slab": 992.0, "r0_sq": 3.7e-4, "type": "symmetry_protected_candidate"}
+    {
+      "theta": 13.45,
+      "slab": 783.0,
+      "r0_sq": 3.2e-4,
+      "type": "FW_candidate"
+    },
+    {
+      "theta": 0.5,
+      "slab": 992.0,
+      "r0_sq": 3.7e-4,
+      "type": "symmetry_protected_candidate"
+    },
+    {
+      "theta": 10.3448,
+      "slab": 408.33,
+      "r0": 9.91e-3,
+      "type": "FW_tight"
+    },
+    {
+      "theta": 0.5,
+      "slab": 783.33,
+      "r0": 7.91e-3,
+      "type": "symm_protected"
+    },
+    {
+      "theta": 8.2759,
+      "slab": 700.00,
+      "r0": 1.53e-2,
+      "type": "FW"
+    },
+    {
+      "theta": 18.6207,
+      "slab": 1158.33,
+      "r0": 1.45e-2,
+      "type": "FW"
+    },
+    {
+      "theta": 3.1034,
+      "slab": 866.67,
+      "r0": 4.01e-2,
+      "type": "FW"
+    },
+    {
+      "theta": 12.4138,
+      "slab": 908.33,
+      "r0": 7.52e-2,
+      "type": "FW"
+    }
   ]
 }

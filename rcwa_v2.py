@@ -363,6 +363,8 @@ def objective_function(params):
     r_0 = get_reflection(theta_rad, slab_val)
     return np.abs(r_0)**2
 
+'''
+Old Scouting code
 def run_two_stage_sweeps():
     """Run two 1D parameter sweeps using objective_function.
 
@@ -462,6 +464,7 @@ def run_optimization():
         print(f"Final Reflection Intensity: {result.fun:.6e}")
     
     print(f"\nTotal optimization time: {elapsed / 60:.2f} minutes")
+'''
 
 # def plot_phase_vortex():
 #     """Generate a highly zoomed-in 2D map of the complex phase and intensity."""
