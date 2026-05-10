@@ -26,9 +26,9 @@ import time
 # ============================================================
 # PIPELINE CONTROL FLAGS  (edit these before each run)
 # ============================================================
-RUN_SCOUT       = False   # Stage 1 — 2D grid scout. Skip if scout_data.npz exists.
-RUN_DESCENT     = False    # Stage 2 — Nelder-Mead from seeds.
-RUN_PHASE_MAP   = False    # Stage 3 — Phase vortex + intensity crater plots.
+RUN_SCOUT       = True   # Stage 1 — 2D grid scout. Skip if scout_data.npz exists.
+RUN_DESCENT     = True    # Stage 2 — Nelder-Mead from seeds.
+RUN_PHASE_MAP   = True    # Stage 3 — Phase vortex + intensity crater plots.
 RUN_CONVERGENCE = True    # Stage 4 — Fourier mode convergence check.
 
 # If RUN_SCOUT = False, descent will load from this seeds file instead.
@@ -170,7 +170,7 @@ omega    = k0 / eta0
 # CORE SOLVER
 # ============================================================
 
-def get_reflection_with_T0R(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
+def get_reflection_with_T0R(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=10):
     """
     Return the complex zeroth-order reflection coefficient r₀ for a 1D C-RCWA solve.
 
@@ -336,7 +336,7 @@ def get_reflection_with_T0R(theta_val, slab_thickness, H_fixed=700.0, p_pol='p',
     T0R    = X @ A
     return T0R
 
-def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
+def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=10):
     T0R = get_reflection_with_T0R(theta_val, slab_thickness, H_fixed, p_pol, fourierMode)
     offset = 4 * fourierMode + 2
     if p_pol == 's':
@@ -543,7 +543,7 @@ def run_descent(
             "status":           status,
             "optimizer_msg":    result.message,
             "n_iter":           iters[0],
-            "fourier_mode":     5,
+            "fourier_mode":     10,
         })
 
     # ── Summary table ────────────────────────────────────────────
@@ -682,7 +682,7 @@ def run_phase_map(
 
     for i in range(grid_size):
         for j in range(grid_size):
-            r_0 = get_reflection(np.radians(theta_vals[j]), slab_vals[i])
+            r_0 = get_reflection(np.radians(theta_vals[j]), slab_vals[i], fourierMode=10)
             Phase_grid[i, j]     = np.angle(r_0)
             Intensity_grid[i, j] = np.abs(r_0) ** 2
         elapsed = (time.time() - t0) / 60
