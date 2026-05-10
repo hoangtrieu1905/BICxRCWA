@@ -349,7 +349,7 @@ def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierM
 # OBJECTIVE FUNCTION
 # ============================================================
 
-def objective_function(params, fourierMode=5):
+def objective_function(params, fourierMode=10):
     """Scalar |r₀|² for optimizer.  params = [theta_deg, slab_nm]."""
     theta_deg, slab_nm = params[0], params[1]
     r_0 = get_reflection(np.radians(theta_deg), slab_nm, fourierMode=fourierMode)
@@ -489,7 +489,7 @@ def run_descent(
         if not (theta_bounds[0] <= t <= theta_bounds[1] and
                 slab_bounds[0]  <= s <= slab_bounds[1]):
             return 1.0
-        return objective_function([t, s])
+        return objective_function([t, s], fourierMode=10)
 
     # ── Run descent from each seed ───────────────────────────────
     descent_results = []
@@ -610,29 +610,24 @@ def _auto_seeds_from_scout(npz_path, intensity_thresh_dark=0.01,
 # STAGE 3 — PHASE MAP + WINDING NUMBER
 # ============================================================
 
-def calculate_winding_number(phase_grid):
-    """
-    Compute topological winding number by integrating phase differences
-    along a closed square contour around the grid center.
-    """
-    c = phase_grid.shape[0] // 2
-    r = 2
+def calculate_winding_number(phase_grid, contour_radius=None):
+    n = phase_grid.shape[0]
+    c = n // 2
+    r = contour_radius if contour_radius is not None else c - 1
 
-    top    = phase_grid[c - r, c - r : c + r]
-    right  = phase_grid[c - r : c + r, c + r]
-    bottom = phase_grid[c + r, c + r : c - r : -1]
-    left   = phase_grid[c + r : c - r : -1, c - r]
+    top    = phase_grid[c - r,         c - r : c + r    ]
+    right  = phase_grid[c - r : c + r, c + r            ]
+    bottom = phase_grid[c + r,         c + r : c - r : -1]
+    left   = phase_grid[c + r : c - r : -1, c - r       ]
+    contour = np.concatenate([top, right, bottom, left])
 
-    contour       = np.concatenate([top, right, bottom, left])
-    diffs         = np.diff(contour)
-    loop_closure  = contour[0] - contour[-1]
-    diffs         = np.append(diffs, loop_closure)
-    wrapped       = np.angle(np.exp(1j * diffs))
-    q             = np.sum(wrapped) / (2 * pi)
+    diffs   = np.diff(np.concatenate([contour, contour[:1]]))
+    wrapped = np.angle(np.exp(1j * diffs))
+    q       = np.round(np.sum(wrapped) / (2 * np.pi))
 
-    print(f"\n=== TOPOLOGICAL PROOF ===")
-    print(f"Winding number q = {q:.4f}  →  nearest integer: {int(np.round(q))}")
-    return int(np.round(q))
+    print(f"\n=== TOPOLOGICAL CHECK ===")
+    print(f"Winding number q = {q:.4f}  ->  nearest integer: {int(q)}")
+    return int(q)
 
 
 def run_phase_map(
@@ -866,4 +861,4 @@ if __name__ == "__main__":
 
     # ── Stage 4: Convergence ─────────────────────────────────────
     if RUN_CONVERGENCE:
-        run_convergence(modes=(5, 10, 15))
+        run_convergence(modes=(10, 15, 20))
