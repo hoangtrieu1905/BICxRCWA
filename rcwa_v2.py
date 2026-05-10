@@ -170,7 +170,7 @@ omega    = k0 / eta0
 # CORE SOLVER
 # ============================================================
 
-def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
+def get_reflection_with_T0R(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
     """
     Return the complex zeroth-order reflection coefficient r₀ for a 1D C-RCWA solve.
 
@@ -194,6 +194,7 @@ def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierM
     ep             = np.empty(numLayers, dtype=object)
     ep[0]          = 1 + 1j * 1e-9      # air (tiny imaginary part for stability)
     ep[1]          = 12.0 + 0j          # silicon-like dielectric
+    #ep[1]          = 1 + 1j*1e-9
     sampleP        = 500
 
     # Grating profile  (amplitude=100 nm, width σ=50 nm, Gaussian)
@@ -333,7 +334,10 @@ def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierM
     bottom = np.block([[Ye_p], [Yh_p]])
     X      = scipy.linalg.solve(top, bottom)
     T0R    = X @ A
+    return T0R
 
+def get_reflection(theta_val, slab_thickness, H_fixed=700.0, p_pol='p', fourierMode=5):
+    T0R = get_reflection_with_T0R(theta_val, slab_thickness, H_fixed, p_pol, fourierMode)
     offset = 4 * fourierMode + 2
     if p_pol == 's':
         return T0R[offset + fourierMode, 0]
